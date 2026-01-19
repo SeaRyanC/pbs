@@ -1085,6 +1085,253 @@ function applyPerspectiveSkew(corners, skewX, skewY, isometric) {
     }
   };
 }
+function calculateCellVariance(imageData, startX, startY, cellWidth, cellHeight) {
+  const pixels = [];
+  const endX = Math.min(startX + cellWidth, imageData.width);
+  const endY = Math.min(startY + cellHeight, imageData.height);
+  for (let y3 = startY; y3 < endY; y3++) {
+    for (let x2 = startX; x2 < endX; x2++) {
+      const idx = (Math.floor(y3) * imageData.width + Math.floor(x2)) * 4;
+      if (idx >= 0 && idx < imageData.data.length - 3) {
+        pixels.push({
+          r: imageData.data[idx],
+          g: imageData.data[idx + 1],
+          b: imageData.data[idx + 2],
+          a: imageData.data[idx + 3]
+        });
+      }
+    }
+  }
+  if (pixels.length < 2) return 0;
+  let sumR = 0, sumG = 0, sumB = 0;
+  for (const p3 of pixels) {
+    sumR += p3.r;
+    sumG += p3.g;
+    sumB += p3.b;
+  }
+  const n2 = pixels.length;
+  const meanR = sumR / n2;
+  const meanG = sumG / n2;
+  const meanB = sumB / n2;
+  let variance = 0;
+  for (const p3 of pixels) {
+    variance += (p3.r - meanR) ** 2 + (p3.g - meanG) ** 2 + (p3.b - meanB) ** 2;
+  }
+  return variance / n2;
+}
+function calculateGridScore(imageData, gridWidth, gridHeight, offsetX, offsetY, sampleRatio = 0.2) {
+  const cellWidth = imageData.width / gridWidth;
+  const cellHeight = imageData.height / gridHeight;
+  const totalCells = gridWidth * gridHeight;
+  const sampleCount = Math.max(10, Math.floor(totalCells * sampleRatio));
+  const step = Math.max(1, Math.floor(totalCells / sampleCount));
+  let totalVariance = 0;
+  let cellCount = 0;
+  for (let i4 = 0; i4 < totalCells; i4 += step) {
+    const cellX = i4 % gridWidth;
+    const cellY = Math.floor(i4 / gridWidth);
+    const startX = offsetX + cellX * cellWidth;
+    const startY = offsetY + cellY * cellHeight;
+    if (startX < 0 || startY < 0 || startX >= imageData.width || startY >= imageData.height) {
+      continue;
+    }
+    totalVariance += calculateCellVariance(imageData, startX, startY, cellWidth, cellHeight);
+    cellCount++;
+  }
+  return cellCount > 0 ? totalVariance / cellCount : Infinity;
+}
+function findOptimalOffset(imageData, gridWidth, gridHeight, offsetSteps = 8) {
+  const cellWidth = imageData.width / gridWidth;
+  const cellHeight = imageData.height / gridHeight;
+  let bestOffset = { offsetX: 0, offsetY: 0, score: Infinity };
+  for (let ox = 0; ox < offsetSteps; ox++) {
+    for (let oy = 0; oy < offsetSteps; oy++) {
+      const offsetX = ox / offsetSteps * cellWidth;
+      const offsetY = oy / offsetSteps * cellHeight;
+      const score = calculateGridScore(imageData, gridWidth, gridHeight, offsetX, offsetY, 0.15);
+      if (score < bestOffset.score) {
+        bestOffset = { offsetX, offsetY, score };
+      }
+    }
+  }
+  return bestOffset;
+}
+function detectPixelPitch(imageData) {
+  const width = imageData.width;
+  const height = imageData.height;
+  const hEdges = new Array(width).fill(0);
+  for (let y3 = 0; y3 < height; y3++) {
+    for (let x2 = 1; x2 < width; x2++) {
+      const idx1 = (y3 * width + x2 - 1) * 4;
+      const idx2 = (y3 * width + x2) * 4;
+      const diff = Math.abs(imageData.data[idx1] - imageData.data[idx2]) + Math.abs(imageData.data[idx1 + 1] - imageData.data[idx2 + 1]) + Math.abs(imageData.data[idx1 + 2] - imageData.data[idx2 + 2]);
+      hEdges[x2] = (hEdges[x2] ?? 0) + diff;
+    }
+  }
+  const vEdges = new Array(height).fill(0);
+  for (let y3 = 1; y3 < height; y3++) {
+    for (let x2 = 0; x2 < width; x2++) {
+      const idx1 = ((y3 - 1) * width + x2) * 4;
+      const idx2 = (y3 * width + x2) * 4;
+      const diff = Math.abs(imageData.data[idx1] - imageData.data[idx2]) + Math.abs(imageData.data[idx1 + 1] - imageData.data[idx2 + 1]) + Math.abs(imageData.data[idx1 + 2] - imageData.data[idx2 + 2]);
+      vEdges[y3] = (vEdges[y3] ?? 0) + diff;
+    }
+  }
+  const findPeriod = (edges, maxPeriod) => {
+    let bestPeriod = 1;
+    let bestScore = 0;
+    for (let period = 4; period <= maxPeriod; period++) {
+      let correlation = 0;
+      let count = 0;
+      for (let i4 = period; i4 < edges.length; i4++) {
+        correlation += (edges[i4] ?? 0) * (edges[i4 - period] ?? 0);
+        count++;
+      }
+      if (count > 0) {
+        const score = correlation / count;
+        if (score > bestScore) {
+          bestScore = score;
+          bestPeriod = period;
+        }
+      }
+    }
+    return bestPeriod;
+  };
+  const pitchX = findPeriod(hEdges, Math.min(100, Math.floor(width / 4)));
+  const pitchY = findPeriod(vEdges, Math.min(100, Math.floor(height / 4)));
+  return { pitchX, pitchY };
+}
+async function inferDimensions(sourceImage, corners, currentWidth, currentHeight, onProgress) {
+  const tempCanvas = document.createElement("canvas");
+  const minX = Math.min(corners.topLeft.x, corners.bottomLeft.x);
+  const maxX = Math.max(corners.topRight.x, corners.bottomRight.x);
+  const minY = Math.min(corners.topLeft.y, corners.topRight.y);
+  const maxY = Math.max(corners.bottomLeft.y, corners.bottomRight.y);
+  const regionWidth = maxX - minX;
+  const regionHeight = maxY - minY;
+  tempCanvas.width = sourceImage.naturalWidth;
+  tempCanvas.height = sourceImage.naturalHeight;
+  const tempCtx = tempCanvas.getContext("2d");
+  if (!tempCtx) {
+    return {
+      width: currentWidth,
+      height: currentHeight,
+      offsetX: 0,
+      offsetY: 0,
+      confidence: 0
+    };
+  }
+  tempCtx.drawImage(sourceImage, 0, 0);
+  const imageData = tempCtx.getImageData(
+    Math.max(0, Math.floor(minX)),
+    Math.max(0, Math.floor(minY)),
+    Math.min(Math.floor(regionWidth), sourceImage.naturalWidth),
+    Math.min(Math.floor(regionHeight), sourceImage.naturalHeight)
+  );
+  onProgress?.({ progress: 5, phase: "Analyzing image structure..." });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  const { pitchX, pitchY } = detectPixelPitch(imageData);
+  const estimatedWidth = Math.round(imageData.width / pitchX);
+  const estimatedHeight = Math.round(imageData.height / pitchY);
+  onProgress?.({
+    progress: 15,
+    phase: "Initial estimate: " + estimatedWidth + "\xD7" + estimatedHeight,
+    currentBest: { width: estimatedWidth, height: estimatedHeight }
+  });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  const searchRanges = {
+    minW: Math.max(4, Math.min(estimatedWidth, currentWidth) - 20),
+    maxW: Math.min(256, Math.max(estimatedWidth, currentWidth) + 20),
+    minH: Math.max(4, Math.min(estimatedHeight, currentHeight) - 20),
+    maxH: Math.min(256, Math.max(estimatedHeight, currentHeight) + 20)
+  };
+  let bestResult = {
+    width: currentWidth,
+    height: currentHeight,
+    offsetX: 0,
+    offsetY: 0,
+    score: Infinity
+  };
+  const coarseStep = 2;
+  const totalCoarseIterations = Math.ceil((searchRanges.maxW - searchRanges.minW) / coarseStep) * Math.ceil((searchRanges.maxH - searchRanges.minH) / coarseStep);
+  let coarseIteration = 0;
+  for (let w3 = searchRanges.minW; w3 <= searchRanges.maxW; w3 += coarseStep) {
+    for (let h3 = searchRanges.minH; h3 <= searchRanges.maxH; h3 += coarseStep) {
+      coarseIteration++;
+      const score = calculateGridScore(imageData, w3, h3, 0, 0, 0.1);
+      if (score < bestResult.score) {
+        bestResult = { width: w3, height: h3, offsetX: 0, offsetY: 0, score };
+      }
+      if (coarseIteration % 50 === 0) {
+        const progress = 15 + coarseIteration / totalCoarseIterations * 35;
+        onProgress?.({
+          progress,
+          phase: `Coarse search: testing ${w3}\xD7${h3}`,
+          currentBest: { width: bestResult.width, height: bestResult.height }
+        });
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      }
+    }
+  }
+  onProgress?.({
+    progress: 50,
+    phase: `Coarse search complete. Best: ${bestResult.width}\xD7${bestResult.height}`,
+    currentBest: { width: bestResult.width, height: bestResult.height }
+  });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  const fineSearchRange = 5;
+  const fineRanges = {
+    minW: Math.max(4, bestResult.width - fineSearchRange),
+    maxW: Math.min(256, bestResult.width + fineSearchRange),
+    minH: Math.max(4, bestResult.height - fineSearchRange),
+    maxH: Math.min(256, bestResult.height + fineSearchRange)
+  };
+  const totalFineIterations = (fineRanges.maxW - fineRanges.minW + 1) * (fineRanges.maxH - fineRanges.minH + 1);
+  let fineIteration = 0;
+  for (let w3 = fineRanges.minW; w3 <= fineRanges.maxW; w3++) {
+    for (let h3 = fineRanges.minH; h3 <= fineRanges.maxH; h3++) {
+      fineIteration++;
+      const { offsetX, offsetY, score } = findOptimalOffset(imageData, w3, h3, 8);
+      if (score < bestResult.score) {
+        bestResult = { width: w3, height: h3, offsetX, offsetY, score };
+      }
+      const progress = 50 + fineIteration / totalFineIterations * 40;
+      if (fineIteration % 10 === 0) {
+        onProgress?.({
+          progress,
+          phase: `Fine search: testing ${w3}\xD7${h3}`,
+          currentBest: { width: bestResult.width, height: bestResult.height }
+        });
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      }
+    }
+  }
+  onProgress?.({
+    progress: 92,
+    phase: `Optimizing alignment for ${bestResult.width}\xD7${bestResult.height}`,
+    currentBest: { width: bestResult.width, height: bestResult.height }
+  });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  const finalOffset = findOptimalOffset(imageData, bestResult.width, bestResult.height, 16);
+  bestResult.offsetX = finalOffset.offsetX;
+  bestResult.offsetY = finalOffset.offsetY;
+  bestResult.score = finalOffset.score;
+  const baselineScore = calculateGridScore(imageData, currentWidth, currentHeight, 0, 0, 0.2);
+  const improvement = baselineScore > 0 ? (baselineScore - bestResult.score) / baselineScore : 0;
+  const confidence = Math.max(0, Math.min(1, improvement + 0.5));
+  onProgress?.({
+    progress: 100,
+    phase: `Complete: ${bestResult.width}\xD7${bestResult.height}`,
+    currentBest: { width: bestResult.width, height: bestResult.height }
+  });
+  return {
+    width: bestResult.width,
+    height: bestResult.height,
+    offsetX: bestResult.offsetX,
+    offsetY: bestResult.offsetY,
+    confidence
+  };
+}
 
 // node_modules/preact/jsx-runtime/dist/jsxRuntime.module.js
 var f3 = 0;
@@ -1116,6 +1363,8 @@ function App() {
   const [dragStartCorners, setDragStartCorners] = h2(null);
   const [dragStartRotation, setDragStartRotation] = h2(0);
   const [imageOffset, setImageOffset] = h2({ x: 0, y: 0 });
+  const [isInferring, setIsInferring] = h2(false);
+  const [inferProgress, setInferProgress] = h2(null);
   const containerRef = A2(null);
   const previewCanvasRef = A2(null);
   const fileInputRef = A2(null);
@@ -1451,6 +1700,37 @@ function App() {
       rotation: 0
     }));
   }, [imageElement]);
+  const handleInferDimensions = q2(async () => {
+    if (!imageElement) return;
+    setIsInferring(true);
+    setInferProgress({ progress: 0, phase: "Starting analysis..." });
+    try {
+      const scaledCorners = scaleCorners(state.gridCorners, imageElement);
+      const skewedCorners = applyPerspectiveSkew(
+        scaledCorners,
+        state.perspectiveSkewX,
+        state.perspectiveSkewY,
+        state.isometric
+      );
+      const result = await inferDimensions(
+        imageElement,
+        skewedCorners,
+        state.outputWidth,
+        state.outputHeight,
+        (progress) => setInferProgress(progress)
+      );
+      setState((prev) => ({
+        ...prev,
+        outputWidth: result.width,
+        outputHeight: result.height
+      }));
+    } catch (error) {
+      console.error("Error inferring dimensions:", error);
+    } finally {
+      setIsInferring(false);
+      setInferProgress(null);
+    }
+  }, [imageElement, state.gridCorners, state.outputWidth, state.outputHeight, state.perspectiveSkewX, state.perspectiveSkewY, state.isometric, scaleCorners]);
   const corners = state.gridCorners;
   return /* @__PURE__ */ u3(k, { children: [
     /* @__PURE__ */ u3("header", { class: "app-header", children: /* @__PURE__ */ u3("h1", { children: "\u{1F3A8} Pixel-Based Crafting - Image Pixelator" }) }),
@@ -1565,7 +1845,8 @@ function App() {
                     if (value > 0 && value <= 256) {
                       setState((prev) => ({ ...prev, outputWidth: value }));
                     }
-                  }
+                  },
+                  disabled: isInferring
                 }
               )
             ] }),
@@ -1583,10 +1864,40 @@ function App() {
                     if (value > 0 && value <= 256) {
                       setState((prev) => ({ ...prev, outputHeight: value }));
                     }
-                  }
+                  },
+                  disabled: isInferring
                 }
               )
             ] })
+          ] }),
+          state.sourceImage && /* @__PURE__ */ u3("div", { style: { marginTop: "0.75rem" }, children: [
+            /* @__PURE__ */ u3(
+              "button",
+              {
+                class: "btn btn-primary",
+                onClick: handleInferDimensions,
+                disabled: isInferring || !imageElement,
+                style: { width: "100%" },
+                children: isInferring ? "\u{1F504} Analyzing..." : "\u{1F50D} Infer Dimensions"
+              }
+            ),
+            isInferring && inferProgress && /* @__PURE__ */ u3("div", { class: "infer-progress", style: { marginTop: "0.5rem" }, children: [
+              /* @__PURE__ */ u3("div", { class: "progress-bar-container", children: /* @__PURE__ */ u3(
+                "div",
+                {
+                  class: "progress-bar-fill",
+                  style: { width: `${inferProgress.progress}%` }
+                }
+              ) }),
+              /* @__PURE__ */ u3("div", { class: "progress-text", children: inferProgress.phase }),
+              inferProgress.currentBest && /* @__PURE__ */ u3("div", { class: "progress-best", children: [
+                "Current best: ",
+                inferProgress.currentBest.width,
+                "\xD7",
+                inferProgress.currentBest.height
+              ] })
+            ] }),
+            /* @__PURE__ */ u3("p", { style: { fontSize: "0.75rem", color: "#888", marginTop: "0.5rem" }, children: "Detects optimal pixel dimensions from pixel art images" })
           ] })
         ] }),
         /* @__PURE__ */ u3("div", { class: "settings-group", children: [
