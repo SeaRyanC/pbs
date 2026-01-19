@@ -372,17 +372,23 @@ function initializeCentroidsKMeansPlusPlus(colors: ICtCp[], k: number): ICtCp[] 
   if (colors.length <= k) {
     return colors.slice();
   }
+  if (colors.length === 0) {
+    return [];
+  }
   
   const centroids: ICtCp[] = [];
   const usedIndices = new Set<number>();
   
   // Choose first centroid randomly
   const firstIdx = Math.floor(Math.random() * colors.length);
-  centroids.push({ ...colors[firstIdx]! });
-  usedIndices.add(firstIdx);
+  const firstColor = colors[firstIdx];
+  if (firstColor) {
+    centroids.push({ ...firstColor });
+    usedIndices.add(firstIdx);
+  }
   
   // Choose remaining centroids with probability proportional to distance squared
-  for (let i = 1; i < k; i++) {
+  for (let i = 1; i < k && i < colors.length; i++) {
     const distances: number[] = [];
     let totalDist = 0;
     
@@ -393,9 +399,15 @@ function initializeCentroidsKMeansPlusPlus(colors: ICtCp[], k: number): ICtCp[] 
       }
       
       // Find distance to nearest centroid
+      const color = colors[j];
+      if (!color) {
+        distances.push(0);
+        continue;
+      }
+      
       let minDist = Infinity;
       for (const centroid of centroids) {
-        const dist = ictcpDistanceSquared(colors[j]!, centroid);
+        const dist = ictcpDistanceSquared(color, centroid);
         minDist = Math.min(minDist, dist);
       }
       distances.push(minDist);
@@ -405,16 +417,22 @@ function initializeCentroidsKMeansPlusPlus(colors: ICtCp[], k: number): ICtCp[] 
     // Choose next centroid with probability proportional to distance squared
     let threshold = Math.random() * totalDist;
     let chosenIdx = 0;
-    for (let j = 0; j < colors.length; j++) {
-      threshold -= distances[j]!;
-      if (threshold <= 0) {
-        chosenIdx = j;
-        break;
+    for (let j = 0; j < distances.length; j++) {
+      const dist = distances[j];
+      if (dist !== undefined) {
+        threshold -= dist;
+        if (threshold <= 0) {
+          chosenIdx = j;
+          break;
+        }
       }
     }
     
-    centroids.push({ ...colors[chosenIdx]! });
-    usedIndices.add(chosenIdx);
+    const chosenColor = colors[chosenIdx];
+    if (chosenColor) {
+      centroids.push({ ...chosenColor });
+      usedIndices.add(chosenIdx);
+    }
   }
   
   return centroids;
@@ -432,12 +450,16 @@ function kMeansClusterColors(colors: RGBA[], maxColors: number, maxIterations: n
   // Find unique colors to reduce computation
   const uniqueColorMap = new Map<string, { ictcp: ICtCp; rgba: RGBA; count: number }>();
   for (let i = 0; i < colors.length; i++) {
-    const key = `${colors[i]!.r},${colors[i]!.g},${colors[i]!.b}`;
+    const color = colors[i];
+    const ictcpColor = ictcpColors[i];
+    if (!color || !ictcpColor) continue;
+    
+    const key = `${color.r},${color.g},${color.b}`;
     const existing = uniqueColorMap.get(key);
     if (existing) {
       existing.count++;
     } else {
-      uniqueColorMap.set(key, { ictcp: ictcpColors[i]!, rgba: colors[i]!, count: 1 });
+      uniqueColorMap.set(key, { ictcp: ictcpColor, rgba: color, count: 1 });
     }
   }
   
@@ -467,14 +489,19 @@ function kMeansClusterColors(colors: RGBA[], maxColors: number, maxIterations: n
       let nearestIdx = 0;
       
       for (let i = 0; i < centroids.length; i++) {
-        const dist = ictcpDistanceSquared(color.ictcp, centroids[i]!);
+        const centroid = centroids[i];
+        if (!centroid) continue;
+        const dist = ictcpDistanceSquared(color.ictcp, centroid);
         if (dist < minDist) {
           minDist = dist;
           nearestIdx = i;
         }
       }
       
-      clusters[nearestIdx]!.colors.push(color);
+      const cluster = clusters[nearestIdx];
+      if (cluster) {
+        cluster.colors.push(color);
+      }
     }
     
     // Update centroids to be weighted mean of their clusters
@@ -524,13 +551,14 @@ function applyColorQuantization(output: ImageData, maxColors: number): void {
   // Collect all non-transparent colors
   const colors: RGBA[] = [];
   for (let i = 0; i < output.data.length; i += 4) {
-    if (output.data[i + 3]! > 0) {
-      colors.push({
-        r: output.data[i]!,
-        g: output.data[i + 1]!,
-        b: output.data[i + 2]!,
-        a: output.data[i + 3]!
-      });
+    const a = output.data[i + 3];
+    if (a !== undefined && a > 0) {
+      const r = output.data[i];
+      const g = output.data[i + 1];
+      const b = output.data[i + 2];
+      if (r !== undefined && g !== undefined && b !== undefined) {
+        colors.push({ r, g, b, a });
+      }
     }
   }
   
@@ -538,36 +566,42 @@ function applyColorQuantization(output: ImageData, maxColors: number): void {
   
   // Get the palette using k-means clustering
   const palette = kMeansClusterColors(colors, maxColors);
+  if (palette.length === 0) return;
+  
   const paletteIctcp = palette.map(c => rgbToIctcp(c));
   
   // Map each pixel to nearest palette color
   for (let i = 0; i < output.data.length; i += 4) {
-    if (output.data[i + 3]! === 0) continue;
+    const a = output.data[i + 3];
+    if (a === undefined || a === 0) continue;
     
-    const pixel: RGBA = {
-      r: output.data[i]!,
-      g: output.data[i + 1]!,
-      b: output.data[i + 2]!,
-      a: output.data[i + 3]!
-    };
+    const r = output.data[i];
+    const g = output.data[i + 1];
+    const b = output.data[i + 2];
+    if (r === undefined || g === undefined || b === undefined) continue;
     
+    const pixel: RGBA = { r, g, b, a };
     const pixelIctcp = rgbToIctcp(pixel);
     
     let minDist = Infinity;
     let nearestIdx = 0;
     
     for (let j = 0; j < paletteIctcp.length; j++) {
-      const dist = ictcpDistanceSquared(pixelIctcp, paletteIctcp[j]!);
+      const paletteColor = paletteIctcp[j];
+      if (!paletteColor) continue;
+      const dist = ictcpDistanceSquared(pixelIctcp, paletteColor);
       if (dist < minDist) {
         minDist = dist;
         nearestIdx = j;
       }
     }
     
-    const nearestColor = palette[nearestIdx]!;
-    output.data[i] = nearestColor.r;
-    output.data[i + 1] = nearestColor.g;
-    output.data[i + 2] = nearestColor.b;
+    const nearestColor = palette[nearestIdx];
+    if (nearestColor) {
+      output.data[i] = nearestColor.r;
+      output.data[i + 1] = nearestColor.g;
+      output.data[i + 2] = nearestColor.b;
+    }
     // Keep original alpha
   }
 }

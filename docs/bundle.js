@@ -736,12 +736,18 @@ function initializeCentroidsKMeansPlusPlus(colors, k3) {
   if (colors.length <= k3) {
     return colors.slice();
   }
+  if (colors.length === 0) {
+    return [];
+  }
   const centroids = [];
   const usedIndices = /* @__PURE__ */ new Set();
   const firstIdx = Math.floor(Math.random() * colors.length);
-  centroids.push({ ...colors[firstIdx] });
-  usedIndices.add(firstIdx);
-  for (let i4 = 1; i4 < k3; i4++) {
+  const firstColor = colors[firstIdx];
+  if (firstColor) {
+    centroids.push({ ...firstColor });
+    usedIndices.add(firstIdx);
+  }
+  for (let i4 = 1; i4 < k3 && i4 < colors.length; i4++) {
     const distances = [];
     let totalDist = 0;
     for (let j3 = 0; j3 < colors.length; j3++) {
@@ -749,9 +755,14 @@ function initializeCentroidsKMeansPlusPlus(colors, k3) {
         distances.push(0);
         continue;
       }
+      const color = colors[j3];
+      if (!color) {
+        distances.push(0);
+        continue;
+      }
       let minDist = Infinity;
       for (const centroid of centroids) {
-        const dist = ictcpDistanceSquared(colors[j3], centroid);
+        const dist = ictcpDistanceSquared(color, centroid);
         minDist = Math.min(minDist, dist);
       }
       distances.push(minDist);
@@ -759,15 +770,21 @@ function initializeCentroidsKMeansPlusPlus(colors, k3) {
     }
     let threshold = Math.random() * totalDist;
     let chosenIdx = 0;
-    for (let j3 = 0; j3 < colors.length; j3++) {
-      threshold -= distances[j3];
-      if (threshold <= 0) {
-        chosenIdx = j3;
-        break;
+    for (let j3 = 0; j3 < distances.length; j3++) {
+      const dist = distances[j3];
+      if (dist !== void 0) {
+        threshold -= dist;
+        if (threshold <= 0) {
+          chosenIdx = j3;
+          break;
+        }
       }
     }
-    centroids.push({ ...colors[chosenIdx] });
-    usedIndices.add(chosenIdx);
+    const chosenColor = colors[chosenIdx];
+    if (chosenColor) {
+      centroids.push({ ...chosenColor });
+      usedIndices.add(chosenIdx);
+    }
   }
   return centroids;
 }
@@ -778,12 +795,15 @@ function kMeansClusterColors(colors, maxColors, maxIterations = 20) {
   const ictcpColors = colors.map((c3) => rgbToIctcp(c3));
   const uniqueColorMap = /* @__PURE__ */ new Map();
   for (let i4 = 0; i4 < colors.length; i4++) {
-    const key = `${colors[i4].r},${colors[i4].g},${colors[i4].b}`;
+    const color = colors[i4];
+    const ictcpColor = ictcpColors[i4];
+    if (!color || !ictcpColor) continue;
+    const key = `${color.r},${color.g},${color.b}`;
     const existing = uniqueColorMap.get(key);
     if (existing) {
       existing.count++;
     } else {
-      uniqueColorMap.set(key, { ictcp: ictcpColors[i4], rgba: colors[i4], count: 1 });
+      uniqueColorMap.set(key, { ictcp: ictcpColor, rgba: color, count: 1 });
     }
   }
   const uniqueColors = Array.from(uniqueColorMap.values());
@@ -803,13 +823,18 @@ function kMeansClusterColors(colors, maxColors, maxIterations = 20) {
       let minDist = Infinity;
       let nearestIdx = 0;
       for (let i4 = 0; i4 < centroids.length; i4++) {
-        const dist = ictcpDistanceSquared(color.ictcp, centroids[i4]);
+        const centroid = centroids[i4];
+        if (!centroid) continue;
+        const dist = ictcpDistanceSquared(color.ictcp, centroid);
         if (dist < minDist) {
           minDist = dist;
           nearestIdx = i4;
         }
       }
-      clusters[nearestIdx].colors.push(color);
+      const cluster = clusters[nearestIdx];
+      if (cluster) {
+        cluster.colors.push(color);
+      }
     }
     let converged = true;
     const newCentroids = [];
@@ -843,40 +868,46 @@ function kMeansClusterColors(colors, maxColors, maxIterations = 20) {
 function applyColorQuantization(output, maxColors) {
   const colors = [];
   for (let i4 = 0; i4 < output.data.length; i4 += 4) {
-    if (output.data[i4 + 3] > 0) {
-      colors.push({
-        r: output.data[i4],
-        g: output.data[i4 + 1],
-        b: output.data[i4 + 2],
-        a: output.data[i4 + 3]
-      });
+    const a3 = output.data[i4 + 3];
+    if (a3 !== void 0 && a3 > 0) {
+      const r3 = output.data[i4];
+      const g2 = output.data[i4 + 1];
+      const b = output.data[i4 + 2];
+      if (r3 !== void 0 && g2 !== void 0 && b !== void 0) {
+        colors.push({ r: r3, g: g2, b, a: a3 });
+      }
     }
   }
   if (colors.length === 0) return;
   const palette = kMeansClusterColors(colors, maxColors);
+  if (palette.length === 0) return;
   const paletteIctcp = palette.map((c3) => rgbToIctcp(c3));
   for (let i4 = 0; i4 < output.data.length; i4 += 4) {
-    if (output.data[i4 + 3] === 0) continue;
-    const pixel = {
-      r: output.data[i4],
-      g: output.data[i4 + 1],
-      b: output.data[i4 + 2],
-      a: output.data[i4 + 3]
-    };
+    const a3 = output.data[i4 + 3];
+    if (a3 === void 0 || a3 === 0) continue;
+    const r3 = output.data[i4];
+    const g2 = output.data[i4 + 1];
+    const b = output.data[i4 + 2];
+    if (r3 === void 0 || g2 === void 0 || b === void 0) continue;
+    const pixel = { r: r3, g: g2, b, a: a3 };
     const pixelIctcp = rgbToIctcp(pixel);
     let minDist = Infinity;
     let nearestIdx = 0;
     for (let j3 = 0; j3 < paletteIctcp.length; j3++) {
-      const dist = ictcpDistanceSquared(pixelIctcp, paletteIctcp[j3]);
+      const paletteColor = paletteIctcp[j3];
+      if (!paletteColor) continue;
+      const dist = ictcpDistanceSquared(pixelIctcp, paletteColor);
       if (dist < minDist) {
         minDist = dist;
         nearestIdx = j3;
       }
     }
     const nearestColor = palette[nearestIdx];
-    output.data[i4] = nearestColor.r;
-    output.data[i4 + 1] = nearestColor.g;
-    output.data[i4 + 2] = nearestColor.b;
+    if (nearestColor) {
+      output.data[i4] = nearestColor.r;
+      output.data[i4 + 1] = nearestColor.g;
+      output.data[i4 + 2] = nearestColor.b;
+    }
   }
 }
 function detectAndRemoveBackground(output, imageData, corners, outputWidth, outputHeight) {
@@ -1099,6 +1130,7 @@ function App() {
   const [isDragOver, setIsDragOver] = h2(false);
   const [dragStartPos, setDragStartPos] = h2(null);
   const [dragStartCorners, setDragStartCorners] = h2(null);
+  const [dragStartRotation, setDragStartRotation] = h2(0);
   const [imageOffset, setImageOffset] = h2({ x: 0, y: 0 });
   const containerRef = A2(null);
   const previewCanvasRef = A2(null);
@@ -1303,12 +1335,10 @@ function App() {
     if (containerRef.current) {
       const rect = containerRef.current.getBoundingClientRect();
       setDragStartPos({ x: e3.clientX - rect.left, y: e3.clientY - rect.top });
-      setState((prev) => {
-        setDragStartCorners(prev.gridCorners);
-        return prev;
-      });
+      setDragStartCorners(state.gridCorners);
+      setDragStartRotation(state.rotation);
     }
-  }, []);
+  }, [state.gridCorners, state.rotation]);
   const handleMouseMove = q2((e3) => {
     if (!isDragging || !dragCorner || !containerRef.current) return;
     const rect = containerRef.current.getBoundingClientRect();
@@ -1344,17 +1374,18 @@ function App() {
         };
         return {
           ...prev,
-          rotation: prev.rotation + angleDelta,
+          rotation: dragStartRotation + angleDelta,
           gridCorners: newCorners
         };
       }
     });
-  }, [isDragging, dragCorner, dragStartPos, dragStartCorners]);
+  }, [isDragging, dragCorner, dragStartPos, dragStartCorners, dragStartRotation]);
   const handleMouseUp = q2(() => {
     setIsDragging(false);
     setDragCorner(null);
     setDragStartPos(null);
     setDragStartCorners(null);
+    setDragStartRotation(0);
   }, []);
   y2(() => {
     if (isDragging) {

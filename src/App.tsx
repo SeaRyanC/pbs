@@ -23,6 +23,7 @@ function App() {
   const [isDragOver, setIsDragOver] = useState(false);
   const [dragStartPos, setDragStartPos] = useState<Point | null>(null);
   const [dragStartCorners, setDragStartCorners] = useState<GridCorners | null>(null);
+  const [dragStartRotation, setDragStartRotation] = useState<number>(0);
   const [imageOffset, setImageOffset] = useState<Point>({ x: 0, y: 0 });
   
   const containerRef = useRef<HTMLDivElement>(null);
@@ -273,12 +274,12 @@ function App() {
     if (containerRef.current) {
       const rect = containerRef.current.getBoundingClientRect();
       setDragStartPos({ x: e.clientX - rect.left, y: e.clientY - rect.top });
-      setState((prev) => {
-        setDragStartCorners(prev.gridCorners);
-        return prev;
-      });
+      // Access state directly via the current state value
+      // We use a ref pattern here since we need synchronous access
+      setDragStartCorners(state.gridCorners);
+      setDragStartRotation(state.rotation);
     }
-  }, []);
+  }, [state.gridCorners, state.rotation]);
 
   const handleMouseMove = useCallback((e: MouseEvent) => {
     if (!isDragging || !dragCorner || !containerRef.current) return;
@@ -317,7 +318,7 @@ function App() {
         );
         const scaleFactor = startDist > 0 ? currentDist / startDist : 1;
         
-        // Apply rotation and scale to all corners
+        // Apply rotation and scale to all corners from the original start position
         const newCorners: GridCorners = {
           topLeft: transformCorner(dragStartCorners.topLeft, center, angleDelta, scaleFactor),
           topRight: transformCorner(dragStartCorners.topRight, center, angleDelta, scaleFactor),
@@ -327,18 +328,19 @@ function App() {
         
         return {
           ...prev,
-          rotation: prev.rotation + angleDelta,
+          rotation: dragStartRotation + angleDelta,
           gridCorners: newCorners
         };
       }
     });
-  }, [isDragging, dragCorner, dragStartPos, dragStartCorners]);
+  }, [isDragging, dragCorner, dragStartPos, dragStartCorners, dragStartRotation]);
 
   const handleMouseUp = useCallback(() => {
     setIsDragging(false);
     setDragCorner(null);
     setDragStartPos(null);
     setDragStartCorners(null);
+    setDragStartRotation(0);
   }, []);
 
   useEffect(() => {
