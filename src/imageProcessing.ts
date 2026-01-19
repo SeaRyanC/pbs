@@ -279,35 +279,17 @@ function linearToSrgb(value: number): number {
   return Math.round(Math.min(255, Math.max(0, (1.055 * Math.pow(value, 1 / 2.4) - 0.055) * 255)));
 }
 
-// PQ (Perceptual Quantizer) transfer function
-function pqEotf(value: number): number {
-  const m1 = 0.1593017578125;
-  const m2 = 78.84375;
-  const c1 = 0.8359375;
-  const c2 = 18.8515625;
-  const c3 = 18.6875;
-  
-  const Vm2 = Math.pow(Math.max(0, value), m2);
-  const num = Math.max(Vm2 - c1, 0);
-  const denom = c2 - c3 * Vm2;
-  return Math.pow(num / denom, 1 / m1);
+// Simplified gamma transfer function for SDR ICtCp
+// Uses a simple power function instead of PQ for SDR content
+function gammaToLinear(value: number): number {
+  return Math.pow(Math.max(0, value), 2.4);
 }
 
-// Inverse PQ transfer function
-function pqInverseEotf(value: number): number {
-  const m1 = 0.1593017578125;
-  const m2 = 78.84375;
-  const c1 = 0.8359375;
-  const c2 = 18.8515625;
-  const c3 = 18.6875;
-  
-  const Ym1 = Math.pow(Math.max(0, value), m1);
-  const num = c1 + c2 * Ym1;
-  const denom = 1 + c3 * Ym1;
-  return Math.pow(num / denom, m2);
+function linearToGamma(value: number): number {
+  return Math.pow(Math.max(0, value), 1 / 2.4);
 }
 
-// Convert RGB to ICtCp
+// Convert RGB to ICtCp (simplified for SDR)
 function rgbToIctcp(rgba: RGBA): ICtCp {
   // Convert sRGB to linear RGB
   const r = srgbToLinear(rgba.r);
@@ -319,10 +301,10 @@ function rgbToIctcp(rgba: RGBA): ICtCp {
   const m = 0.166748 * r + 0.720459 * g + 0.112793 * b;
   const s = 0.024170 * r + 0.075440 * g + 0.900390 * b;
   
-  // Apply PQ transfer function
-  const lPrime = pqInverseEotf(l);
-  const mPrime = pqInverseEotf(m);
-  const sPrime = pqInverseEotf(s);
+  // Apply simple gamma transfer function (works better for SDR than PQ)
+  const lPrime = linearToGamma(l);
+  const mPrime = linearToGamma(m);
+  const sPrime = linearToGamma(s);
   
   // LMS' to ICtCp
   const i = 0.5 * lPrime + 0.5 * mPrime;
@@ -341,10 +323,10 @@ function ictcpToRgb(ictcp: ICtCp): RGBA {
   const mPrime = i - 0.008609 * ct - 0.111030 * cp;
   const sPrime = i + 0.560031 * ct - 0.320627 * cp;
   
-  // Inverse PQ transfer function
-  const l = pqEotf(lPrime);
-  const m = pqEotf(mPrime);
-  const s = pqEotf(sPrime);
+  // Apply inverse gamma transfer function
+  const l = gammaToLinear(lPrime);
+  const m = gammaToLinear(mPrime);
+  const s = gammaToLinear(sPrime);
   
   // LMS to RGB (inverse of above matrix)
   const r = 3.436607 * l - 2.506201 * m + 0.069594 * s;

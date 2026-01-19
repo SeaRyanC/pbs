@@ -671,27 +671,11 @@ function linearToSrgb(value) {
   }
   return Math.round(Math.min(255, Math.max(0, (1.055 * Math.pow(value, 1 / 2.4) - 0.055) * 255)));
 }
-function pqEotf(value) {
-  const m1 = 0.1593017578125;
-  const m22 = 78.84375;
-  const c1 = 0.8359375;
-  const c22 = 18.8515625;
-  const c3 = 18.6875;
-  const Vm2 = Math.pow(Math.max(0, value), m22);
-  const num = Math.max(Vm2 - c1, 0);
-  const denom = c22 - c3 * Vm2;
-  return Math.pow(num / denom, 1 / m1);
+function gammaToLinear(value) {
+  return Math.pow(Math.max(0, value), 2.4);
 }
-function pqInverseEotf(value) {
-  const m1 = 0.1593017578125;
-  const m22 = 78.84375;
-  const c1 = 0.8359375;
-  const c22 = 18.8515625;
-  const c3 = 18.6875;
-  const Ym1 = Math.pow(Math.max(0, value), m1);
-  const num = c1 + c22 * Ym1;
-  const denom = 1 + c3 * Ym1;
-  return Math.pow(num / denom, m22);
+function linearToGamma(value) {
+  return Math.pow(Math.max(0, value), 1 / 2.4);
 }
 function rgbToIctcp(rgba) {
   const r3 = srgbToLinear(rgba.r);
@@ -700,9 +684,9 @@ function rgbToIctcp(rgba) {
   const l3 = 0.412109 * r3 + 0.523925 * g2 + 0.063965 * b;
   const m3 = 0.166748 * r3 + 0.720459 * g2 + 0.112793 * b;
   const s3 = 0.02417 * r3 + 0.07544 * g2 + 0.90039 * b;
-  const lPrime = pqInverseEotf(l3);
-  const mPrime = pqInverseEotf(m3);
-  const sPrime = pqInverseEotf(s3);
+  const lPrime = linearToGamma(l3);
+  const mPrime = linearToGamma(m3);
+  const sPrime = linearToGamma(s3);
   const i4 = 0.5 * lPrime + 0.5 * mPrime;
   const ct = 1.613769 * lPrime - 3.323486 * mPrime + 1.709717 * sPrime;
   const cp = 4.378152 * lPrime - 4.245608 * mPrime - 0.132544 * sPrime;
@@ -713,9 +697,9 @@ function ictcpToRgb(ictcp) {
   const lPrime = i4 + 8609e-6 * ct + 0.11103 * cp;
   const mPrime = i4 - 8609e-6 * ct - 0.11103 * cp;
   const sPrime = i4 + 0.560031 * ct - 0.320627 * cp;
-  const l3 = pqEotf(lPrime);
-  const m3 = pqEotf(mPrime);
-  const s3 = pqEotf(sPrime);
+  const l3 = gammaToLinear(lPrime);
+  const m3 = gammaToLinear(mPrime);
+  const s3 = gammaToLinear(sPrime);
   const r3 = 3.436607 * l3 - 2.506201 * m3 + 0.069594 * s3;
   const g2 = -0.791329 * l3 + 1.9836 * m3 - 0.192271 * s3;
   const b = -0.02595 * l3 - 0.09893 * m3 + 1.12488 * s3;
