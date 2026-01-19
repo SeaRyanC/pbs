@@ -33,7 +33,8 @@ export type ColorMethod =
   | "median"
   | "mode"
   | "kernelMedian"
-  | "centerWeighted";
+  | "centerWeighted"
+  | "centerSpot";
 
 export interface ColorMethodInfo {
   id: ColorMethod;
@@ -66,6 +67,11 @@ export const COLOR_METHODS: ColorMethodInfo[] = [
     id: "centerWeighted",
     name: "Center Weighted",
     description: "Center pixel weighted more heavily"
+  },
+  {
+    id: "centerSpot",
+    name: "Center Spot",
+    description: "Only measures color in the middle 20% of the cell"
   }
 ];
 
