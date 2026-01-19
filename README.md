@@ -16,6 +16,7 @@ A static single-page web app for converting large, non-pixelated images into pix
   - Center Weighted: Center pixel weighted more heavily
 - **Configurable Output**: Set custom dimensions (default 64x64)
 - **Live Preview**: Real-time pixelated preview without smoothing artifacts
+- **Background Removal**: Automatically detects and removes uniform background colors using flood-fill from output edges
 - **Export Options**: Copy to clipboard or download as PNG
 - **Persistence**: All settings saved to localStorage
 
@@ -53,3 +54,17 @@ The app builds to the `docs/` folder for easy GitHub Pages deployment using the 
 4. Configure output dimensions and color selection method
 5. Preview the result in real-time
 6. Copy or download the pixelated image
+
+### Background Removal
+
+The background removal feature uses an adaptive threshold algorithm that works better with bright, saturated colors like magenta:
+
+- **How it works**: Detects the most common color at the output image edges and uses flood-fill to remove connected regions
+- **Important**: To use background removal, ensure your grid selection includes some background pixels that reach the output edges
+- **Adaptive threshold**: Automatically adjusts tolerance based on color intensity and saturation (0.02-0.3 range)
+- **Testing**: Run `node test-background-removal.mjs` to verify the threshold calculation
+
+For best results with background removal:
+- Extend your grid selection slightly beyond the subject
+- Ensure some background appears at the output edges
+- The algorithm works from edges inward using flood-fill
