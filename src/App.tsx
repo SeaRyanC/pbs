@@ -2,7 +2,7 @@ import { render } from "preact";
 import { useState, useEffect, useRef, useCallback } from "preact/hooks";
 import type { AppState, Point, GridCorners, ColorMethod, SelectionMode } from "./types";
 import { DEFAULT_STATE, COLOR_METHODS, saveState, loadState } from "./types";
-import { generatePixelatedImage, getCornersCenter, rotatePoint, applyPerspectiveSkew, inferDimensions, type InferDimensionsProgress } from "./imageProcessing";
+import { generatePixelatedImage, getCornersCenter, rotatePoint, applyPerspectiveSkew, inferDimensions, inferDimensionsSuperSmart, type InferDimensionsProgress, type SuperSmartProgress } from "./imageProcessing";
 
 type CornerKey = keyof GridCorners;
 
@@ -555,6 +555,41 @@ function App() {
     }
   }, [imageElement, state.gridCorners, state.outputWidth, state.outputHeight, state.colorMethod, state.perspectiveSkewX, state.perspectiveSkewY, state.isometric, scaleCorners]);
 
+  const handleSuperSmartInfer = useCallback(async () => {
+    if (!imageElement) return;
+    
+    setIsInferring(true);
+    setInferProgress({ progress: 0, phase: "Starting super-smart analysis..." });
+    
+    try {
+      const scaledCorners = scaleCorners(state.gridCorners, imageElement);
+      const skewedCorners = applyPerspectiveSkew(
+        scaledCorners,
+        state.perspectiveSkewX,
+        state.perspectiveSkewY,
+        state.isometric
+      );
+      
+      const result = await inferDimensionsSuperSmart(
+        imageElement,
+        skewedCorners,
+        (progress: SuperSmartProgress) => setInferProgress(progress)
+      );
+      
+      // Update the output dimensions with the inferred values
+      setState((prev) => ({
+        ...prev,
+        outputWidth: result.width,
+        outputHeight: result.height
+      }));
+    } catch (error) {
+      console.error("Error in super-smart inference:", error);
+    } finally {
+      setIsInferring(false);
+      setInferProgress(null);
+    }
+  }, [imageElement, state.gridCorners, state.perspectiveSkewX, state.perspectiveSkewY, state.isometric, scaleCorners]);
+
   const corners = state.gridCorners;
 
   return (
@@ -724,14 +759,25 @@ function App() {
             </div>
             {state.sourceImage && (
               <div style={{ marginTop: "0.75rem" }}>
-                <button
-                  class="btn btn-primary"
-                  onClick={handleInferDimensions}
-                  disabled={isInferring || !imageElement}
-                  style={{ width: "100%" }}
-                >
-                  {isInferring ? "🔄 Analyzing..." : "🔍 Infer Dimensions"}
-                </button>
+                <div style={{ display: "flex", gap: "0.5rem" }}>
+                  <button
+                    class="btn btn-primary"
+                    onClick={handleInferDimensions}
+                    disabled={isInferring || !imageElement}
+                    style={{ flex: 1 }}
+                  >
+                    {isInferring ? "🔄..." : "🔍 Infer"}
+                  </button>
+                  <button
+                    class="btn btn-primary"
+                    onClick={handleSuperSmartInfer}
+                    disabled={isInferring || !imageElement}
+                    style={{ flex: 1 }}
+                    title="Super-smart mode: Stochastically infers pixel art dimensions from misaligned images"
+                  >
+                    {isInferring ? "🔄..." : "🧠 Super Smart"}
+                  </button>
+                </div>
                 {isInferring && inferProgress && (
                   <div class="infer-progress" style={{ marginTop: "0.5rem" }}>
                     <div class="progress-bar-container">
@@ -751,7 +797,8 @@ function App() {
                   </div>
                 )}
                 <p style={{ fontSize: "0.75rem", color: "#888", marginTop: "0.5rem" }}>
-                  Detects optimal pixel dimensions from pixel art images
+                  Infer: Uses current dimensions as starting point<br/>
+                  Super Smart: Stochastically finds optimal grid for misaligned pixel art
                 </p>
               </div>
             )}

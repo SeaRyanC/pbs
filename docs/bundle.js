@@ -1378,6 +1378,219 @@ async function inferDimensions(sourceImage, corners, currentWidth, currentHeight
     confidence
   };
 }
+function calculateSuperSmartScore(imageData, pitch, offsetX, offsetY, sampleRatio = 0.3) {
+  const gridWidth = Math.floor((imageData.width - offsetX) / pitch);
+  const gridHeight = Math.floor((imageData.height - offsetY) / pitch);
+  if (gridWidth < 4 || gridHeight < 4) return Infinity;
+  const totalCells = gridWidth * gridHeight;
+  const sampleCount = Math.max(50, Math.floor(totalCells * sampleRatio));
+  const step = Math.max(1, Math.floor(totalCells / sampleCount));
+  let totalIntraVariance = 0;
+  let cellCount = 0;
+  const cellMeans = [];
+  for (let i4 = 0; i4 < totalCells; i4 += step) {
+    const cellX = i4 % gridWidth;
+    const cellY = Math.floor(i4 / gridWidth);
+    const startX = Math.floor(offsetX + cellX * pitch);
+    const startY = Math.floor(offsetY + cellY * pitch);
+    const endX = Math.min(startX + Math.floor(pitch), imageData.width);
+    const endY = Math.min(startY + Math.floor(pitch), imageData.height);
+    if (startX < 0 || startY < 0 || endX > imageData.width || endY > imageData.height) {
+      continue;
+    }
+    let sumR = 0, sumG = 0, sumB = 0;
+    let sumR2 = 0, sumG2 = 0, sumB2 = 0;
+    let pixelCount = 0;
+    for (let y3 = startY; y3 < endY; y3++) {
+      for (let x2 = startX; x2 < endX; x2++) {
+        const idx = (y3 * imageData.width + x2) * 4;
+        const r3 = imageData.data[idx] ?? 0;
+        const g2 = imageData.data[idx + 1] ?? 0;
+        const b = imageData.data[idx + 2] ?? 0;
+        sumR += r3;
+        sumG += g2;
+        sumB += b;
+        sumR2 += r3 * r3;
+        sumG2 += g2 * g2;
+        sumB2 += b * b;
+        pixelCount++;
+      }
+    }
+    if (pixelCount > 1) {
+      const meanR = sumR / pixelCount;
+      const meanG = sumG / pixelCount;
+      const meanB = sumB / pixelCount;
+      const varR = sumR2 / pixelCount - meanR * meanR;
+      const varG = sumG2 / pixelCount - meanG * meanG;
+      const varB = sumB2 / pixelCount - meanB * meanB;
+      totalIntraVariance += varR + varG + varB;
+      cellMeans.push({ r: meanR, g: meanG, b: meanB });
+      cellCount++;
+    }
+  }
+  if (cellCount < 2) return Infinity;
+  const avgIntraVariance = totalIntraVariance / cellCount;
+  const globalMean = {
+    r: cellMeans.reduce((s3, c3) => s3 + c3.r, 0) / cellMeans.length,
+    g: cellMeans.reduce((s3, c3) => s3 + c3.g, 0) / cellMeans.length,
+    b: cellMeans.reduce((s3, c3) => s3 + c3.b, 0) / cellMeans.length
+  };
+  let interCellVariance = 0;
+  for (const mean of cellMeans) {
+    interCellVariance += (mean.r - globalMean.r) ** 2;
+    interCellVariance += (mean.g - globalMean.g) ** 2;
+    interCellVariance += (mean.b - globalMean.b) ** 2;
+  }
+  interCellVariance /= cellMeans.length;
+  const normalizedScore = avgIntraVariance / (Math.sqrt(interCellVariance) + 1) * pitch;
+  return normalizedScore;
+}
+function findBestOffsetForPitch(imageData, pitch, offsetSteps = 16) {
+  let bestScore = Infinity;
+  let bestOffset = { offsetX: 0, offsetY: 0 };
+  for (let ox = 0; ox < offsetSteps; ox++) {
+    for (let oy = 0; oy < offsetSteps; oy++) {
+      const offsetX = ox / offsetSteps * pitch;
+      const offsetY = oy / offsetSteps * pitch;
+      const score = calculateSuperSmartScore(imageData, pitch, offsetX, offsetY, 0.5);
+      if (score < bestScore) {
+        bestScore = score;
+        bestOffset = { offsetX, offsetY };
+      }
+    }
+  }
+  return { ...bestOffset, score: bestScore };
+}
+async function inferDimensionsSuperSmart(sourceImage, corners, onProgress) {
+  const tempCanvas = document.createElement("canvas");
+  const minX = Math.min(corners.topLeft.x, corners.bottomLeft.x);
+  const maxX = Math.max(corners.topRight.x, corners.bottomRight.x);
+  const minY = Math.min(corners.topLeft.y, corners.topRight.y);
+  const maxY = Math.max(corners.bottomLeft.y, corners.bottomRight.y);
+  const regionWidth = maxX - minX;
+  const regionHeight = maxY - minY;
+  tempCanvas.width = sourceImage.naturalWidth;
+  tempCanvas.height = sourceImage.naturalHeight;
+  const tempCtx = tempCanvas.getContext("2d");
+  if (!tempCtx) {
+    return {
+      width: 16,
+      height: 16,
+      offsetX: 0,
+      offsetY: 0,
+      pitch: regionWidth / 16,
+      score: Infinity,
+      confidence: 0
+    };
+  }
+  tempCtx.drawImage(sourceImage, 0, 0);
+  const imageData = tempCtx.getImageData(
+    Math.max(0, Math.floor(minX)),
+    Math.max(0, Math.floor(minY)),
+    Math.min(Math.floor(regionWidth), sourceImage.naturalWidth),
+    Math.min(Math.floor(regionHeight), sourceImage.naturalHeight)
+  );
+  onProgress?.({ progress: 5, phase: "Starting super-smart analysis..." });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  const gridSizes = [8, 12, 14, 16, 18, 20, 24, 28, 32, 40, 48, 64];
+  let bestResult = {
+    gridSize: 16,
+    pitch: imageData.width / 16,
+    offsetX: 0,
+    offsetY: 0,
+    score: Infinity
+  };
+  onProgress?.({ progress: 10, phase: "Testing candidate grid sizes..." });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  for (let i4 = 0; i4 < gridSizes.length; i4++) {
+    const gridSize = gridSizes[i4];
+    if (gridSize === void 0) continue;
+    const pitch = imageData.width / gridSize;
+    if (pitch < 4) continue;
+    const result = findBestOffsetForPitch(imageData, pitch, 16);
+    if (result.score < bestResult.score) {
+      bestResult = {
+        gridSize,
+        pitch,
+        offsetX: result.offsetX,
+        offsetY: result.offsetY,
+        score: result.score
+      };
+    }
+    const progress = 10 + i4 / gridSizes.length * 40;
+    onProgress?.({
+      progress,
+      phase: `Testing ${gridSize}\xD7${gridSize} grid...`,
+      currentBest: { width: bestResult.gridSize, height: bestResult.gridSize }
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  onProgress?.({
+    progress: 55,
+    phase: `Fine-tuning ${bestResult.gridSize}\xD7${bestResult.gridSize} alignment...`,
+    currentBest: { width: bestResult.gridSize, height: bestResult.gridSize }
+  });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  const fineResult = findBestOffsetForPitch(imageData, bestResult.pitch, 32);
+  if (fineResult.score < bestResult.score) {
+    bestResult.offsetX = fineResult.offsetX;
+    bestResult.offsetY = fineResult.offsetY;
+    bestResult.score = fineResult.score;
+  }
+  onProgress?.({
+    progress: 70,
+    phase: "Testing nearby grid sizes...",
+    currentBest: { width: bestResult.gridSize, height: bestResult.gridSize }
+  });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  const nearbyGridSizes = [
+    bestResult.gridSize - 2,
+    bestResult.gridSize - 1,
+    bestResult.gridSize + 1,
+    bestResult.gridSize + 2
+  ].filter((s3) => s3 >= 8 && s3 <= 128);
+  for (const gridSize of nearbyGridSizes) {
+    const pitch = imageData.width / gridSize;
+    if (pitch < 4) continue;
+    const result = findBestOffsetForPitch(imageData, pitch, 32);
+    if (result.score < bestResult.score) {
+      bestResult = {
+        gridSize,
+        pitch,
+        offsetX: result.offsetX,
+        offsetY: result.offsetY,
+        score: result.score
+      };
+    }
+  }
+  onProgress?.({
+    progress: 85,
+    phase: `Final optimization for ${bestResult.gridSize}\xD7${bestResult.gridSize}...`,
+    currentBest: { width: bestResult.gridSize, height: bestResult.gridSize }
+  });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  const ultraFineResult = findBestOffsetForPitch(imageData, bestResult.pitch, 64);
+  if (ultraFineResult.score < bestResult.score) {
+    bestResult.offsetX = ultraFineResult.offsetX;
+    bestResult.offsetY = ultraFineResult.offsetY;
+    bestResult.score = ultraFineResult.score;
+  }
+  const confidence = Math.max(0, Math.min(1, 1 - bestResult.score / 100));
+  onProgress?.({
+    progress: 100,
+    phase: `Complete: ${bestResult.gridSize}\xD7${bestResult.gridSize}`,
+    currentBest: { width: bestResult.gridSize, height: bestResult.gridSize }
+  });
+  return {
+    width: bestResult.gridSize,
+    height: bestResult.gridSize,
+    offsetX: bestResult.offsetX,
+    offsetY: bestResult.offsetY,
+    pitch: bestResult.pitch,
+    score: bestResult.score,
+    confidence
+  };
+}
 
 // node_modules/preact/jsx-runtime/dist/jsxRuntime.module.js
 var f3 = 0;
@@ -1828,6 +2041,35 @@ function App() {
       setInferProgress(null);
     }
   }, [imageElement, state.gridCorners, state.outputWidth, state.outputHeight, state.colorMethod, state.perspectiveSkewX, state.perspectiveSkewY, state.isometric, scaleCorners]);
+  const handleSuperSmartInfer = q2(async () => {
+    if (!imageElement) return;
+    setIsInferring(true);
+    setInferProgress({ progress: 0, phase: "Starting super-smart analysis..." });
+    try {
+      const scaledCorners = scaleCorners(state.gridCorners, imageElement);
+      const skewedCorners = applyPerspectiveSkew(
+        scaledCorners,
+        state.perspectiveSkewX,
+        state.perspectiveSkewY,
+        state.isometric
+      );
+      const result = await inferDimensionsSuperSmart(
+        imageElement,
+        skewedCorners,
+        (progress) => setInferProgress(progress)
+      );
+      setState((prev) => ({
+        ...prev,
+        outputWidth: result.width,
+        outputHeight: result.height
+      }));
+    } catch (error) {
+      console.error("Error in super-smart inference:", error);
+    } finally {
+      setIsInferring(false);
+      setInferProgress(null);
+    }
+  }, [imageElement, state.gridCorners, state.perspectiveSkewX, state.perspectiveSkewY, state.isometric, scaleCorners]);
   const corners = state.gridCorners;
   return /* @__PURE__ */ u3(k, { children: [
     /* @__PURE__ */ u3("header", { class: "app-header", children: /* @__PURE__ */ u3("h1", { children: "\u{1F3A8} Pixel-Based Crafting - Image Pixelator" }) }),
@@ -1990,16 +2232,29 @@ function App() {
             ] })
           ] }),
           state.sourceImage && /* @__PURE__ */ u3("div", { style: { marginTop: "0.75rem" }, children: [
-            /* @__PURE__ */ u3(
-              "button",
-              {
-                class: "btn btn-primary",
-                onClick: handleInferDimensions,
-                disabled: isInferring || !imageElement,
-                style: { width: "100%" },
-                children: isInferring ? "\u{1F504} Analyzing..." : "\u{1F50D} Infer Dimensions"
-              }
-            ),
+            /* @__PURE__ */ u3("div", { style: { display: "flex", gap: "0.5rem" }, children: [
+              /* @__PURE__ */ u3(
+                "button",
+                {
+                  class: "btn btn-primary",
+                  onClick: handleInferDimensions,
+                  disabled: isInferring || !imageElement,
+                  style: { flex: 1 },
+                  children: isInferring ? "\u{1F504}..." : "\u{1F50D} Infer"
+                }
+              ),
+              /* @__PURE__ */ u3(
+                "button",
+                {
+                  class: "btn btn-primary",
+                  onClick: handleSuperSmartInfer,
+                  disabled: isInferring || !imageElement,
+                  style: { flex: 1 },
+                  title: "Super-smart mode: Stochastically infers pixel art dimensions from misaligned images",
+                  children: isInferring ? "\u{1F504}..." : "\u{1F9E0} Super Smart"
+                }
+              )
+            ] }),
             isInferring && inferProgress && /* @__PURE__ */ u3("div", { class: "infer-progress", style: { marginTop: "0.5rem" }, children: [
               /* @__PURE__ */ u3("div", { class: "progress-bar-container", children: /* @__PURE__ */ u3(
                 "div",
@@ -2016,7 +2271,11 @@ function App() {
                 inferProgress.currentBest.height
               ] })
             ] }),
-            /* @__PURE__ */ u3("p", { style: { fontSize: "0.75rem", color: "#888", marginTop: "0.5rem" }, children: "Detects optimal pixel dimensions from pixel art images" })
+            /* @__PURE__ */ u3("p", { style: { fontSize: "0.75rem", color: "#888", marginTop: "0.5rem" }, children: [
+              "Infer: Uses current dimensions as starting point",
+              /* @__PURE__ */ u3("br", {}),
+              "Super Smart: Stochastically finds optimal grid for misaligned pixel art"
+            ] })
           ] })
         ] }),
         /* @__PURE__ */ u3("div", { class: "settings-group", children: [

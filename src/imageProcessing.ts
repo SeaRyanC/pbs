@@ -1329,3 +1329,347 @@ export async function inferDimensions(
     confidence
   };
 }
+
+/**
+ * Super-Smart Mode Algorithm
+ * 
+ * This algorithm stochastically infers pixel art from an image that may not be
+ * perfectly aligned to a grid. It works by:
+ * 
+ * 1. Testing multiple candidate grid sizes (based on common pixel art dimensions)
+ * 2. For each grid size, exhaustively searching for the optimal offset
+ * 3. Using a score that combines low intra-cell variance with high inter-cell variance
+ * 
+ * The key insight is that pixel art has:
+ * - Very uniform colors WITHIN each pixel cell (low intra-cell variance)
+ * - Distinct color differences BETWEEN adjacent cells (high inter-cell variance)
+ */
+
+export interface SuperSmartResult {
+  width: number;
+  height: number;
+  offsetX: number;
+  offsetY: number;
+  pitch: number;
+  score: number;
+  confidence: number;
+}
+
+export interface SuperSmartProgress {
+  progress: number;
+  phase: string;
+  currentBest?: { width: number; height: number };
+}
+
+/**
+ * Calculate the super-smart score for a given configuration.
+ * Lower score is better.
+ * 
+ * The score is: intra-cell variance / (inter-cell variance + 1)
+ * This favors configurations where cells are uniform internally but distinct from each other.
+ */
+function calculateSuperSmartScore(
+  imageData: ImageData,
+  pitch: number,
+  offsetX: number,
+  offsetY: number,
+  sampleRatio: number = 0.3
+): number {
+  const gridWidth = Math.floor((imageData.width - offsetX) / pitch);
+  const gridHeight = Math.floor((imageData.height - offsetY) / pitch);
+  
+  if (gridWidth < 4 || gridHeight < 4) return Infinity;
+  
+  const totalCells = gridWidth * gridHeight;
+  const sampleCount = Math.max(50, Math.floor(totalCells * sampleRatio));
+  const step = Math.max(1, Math.floor(totalCells / sampleCount));
+  
+  let totalIntraVariance = 0;
+  let cellCount = 0;
+  const cellMeans: { r: number; g: number; b: number }[] = [];
+  
+  for (let i = 0; i < totalCells; i += step) {
+    const cellX = i % gridWidth;
+    const cellY = Math.floor(i / gridWidth);
+    
+    const startX = Math.floor(offsetX + cellX * pitch);
+    const startY = Math.floor(offsetY + cellY * pitch);
+    const endX = Math.min(startX + Math.floor(pitch), imageData.width);
+    const endY = Math.min(startY + Math.floor(pitch), imageData.height);
+    
+    if (startX < 0 || startY < 0 || endX > imageData.width || endY > imageData.height) {
+      continue;
+    }
+    
+    // Calculate mean and variance for this cell
+    let sumR = 0, sumG = 0, sumB = 0;
+    let sumR2 = 0, sumG2 = 0, sumB2 = 0;
+    let pixelCount = 0;
+    
+    for (let y = startY; y < endY; y++) {
+      for (let x = startX; x < endX; x++) {
+        const idx = (y * imageData.width + x) * 4;
+        const r = imageData.data[idx] ?? 0;
+        const g = imageData.data[idx + 1] ?? 0;
+        const b = imageData.data[idx + 2] ?? 0;
+        
+        sumR += r;
+        sumG += g;
+        sumB += b;
+        sumR2 += r * r;
+        sumG2 += g * g;
+        sumB2 += b * b;
+        pixelCount++;
+      }
+    }
+    
+    if (pixelCount > 1) {
+      const meanR = sumR / pixelCount;
+      const meanG = sumG / pixelCount;
+      const meanB = sumB / pixelCount;
+      
+      // Variance = E[X^2] - E[X]^2
+      const varR = sumR2 / pixelCount - meanR * meanR;
+      const varG = sumG2 / pixelCount - meanG * meanG;
+      const varB = sumB2 / pixelCount - meanB * meanB;
+      
+      totalIntraVariance += varR + varG + varB;
+      cellMeans.push({ r: meanR, g: meanG, b: meanB });
+      cellCount++;
+    }
+  }
+  
+  if (cellCount < 2) return Infinity;
+  
+  const avgIntraVariance = totalIntraVariance / cellCount;
+  
+  // Calculate inter-cell variance
+  const globalMean = {
+    r: cellMeans.reduce((s, c) => s + c.r, 0) / cellMeans.length,
+    g: cellMeans.reduce((s, c) => s + c.g, 0) / cellMeans.length,
+    b: cellMeans.reduce((s, c) => s + c.b, 0) / cellMeans.length
+  };
+  
+  let interCellVariance = 0;
+  for (const mean of cellMeans) {
+    interCellVariance += (mean.r - globalMean.r) ** 2;
+    interCellVariance += (mean.g - globalMean.g) ** 2;
+    interCellVariance += (mean.b - globalMean.b) ** 2;
+  }
+  interCellVariance /= cellMeans.length;
+  
+  // Score: low intra-cell variance, high inter-cell variance
+  // Lower is better
+  // Normalize by pitch^2 to strongly prefer smaller grid sizes (more cells)
+  // This is because pixel art typically has 16-64 pixel grids, not 100+
+  const normalizedScore = (avgIntraVariance / (Math.sqrt(interCellVariance) + 1)) * pitch;
+  
+  return normalizedScore;
+}
+
+/**
+ * Find the best offset for a given pitch using exhaustive search.
+ */
+function findBestOffsetForPitch(
+  imageData: ImageData,
+  pitch: number,
+  offsetSteps: number = 16
+): { offsetX: number; offsetY: number; score: number } {
+  let bestScore = Infinity;
+  let bestOffset = { offsetX: 0, offsetY: 0 };
+  
+  for (let ox = 0; ox < offsetSteps; ox++) {
+    for (let oy = 0; oy < offsetSteps; oy++) {
+      const offsetX = (ox / offsetSteps) * pitch;
+      const offsetY = (oy / offsetSteps) * pitch;
+      
+      const score = calculateSuperSmartScore(imageData, pitch, offsetX, offsetY, 0.5);
+      
+      if (score < bestScore) {
+        bestScore = score;
+        bestOffset = { offsetX, offsetY };
+      }
+    }
+  }
+  
+  return { ...bestOffset, score: bestScore };
+}
+
+/**
+ * Super-smart inference algorithm.
+ * Tests multiple grid sizes and finds the optimal offset for each.
+ */
+export async function inferDimensionsSuperSmart(
+  sourceImage: HTMLImageElement,
+  corners: GridCorners,
+  onProgress?: (progress: SuperSmartProgress) => void
+): Promise<SuperSmartResult> {
+  // Create a canvas to get image data from the selected region
+  const tempCanvas = document.createElement("canvas");
+  
+  // Calculate the bounding box of the corners
+  const minX = Math.min(corners.topLeft.x, corners.bottomLeft.x);
+  const maxX = Math.max(corners.topRight.x, corners.bottomRight.x);
+  const minY = Math.min(corners.topLeft.y, corners.topRight.y);
+  const maxY = Math.max(corners.bottomLeft.y, corners.bottomRight.y);
+  
+  const regionWidth = maxX - minX;
+  const regionHeight = maxY - minY;
+  
+  // Draw the full image to canvas
+  tempCanvas.width = sourceImage.naturalWidth;
+  tempCanvas.height = sourceImage.naturalHeight;
+  const tempCtx = tempCanvas.getContext("2d");
+  
+  if (!tempCtx) {
+    return {
+      width: 16,
+      height: 16,
+      offsetX: 0,
+      offsetY: 0,
+      pitch: regionWidth / 16,
+      score: Infinity,
+      confidence: 0
+    };
+  }
+  
+  tempCtx.drawImage(sourceImage, 0, 0);
+  const imageData = tempCtx.getImageData(
+    Math.max(0, Math.floor(minX)),
+    Math.max(0, Math.floor(minY)),
+    Math.min(Math.floor(regionWidth), sourceImage.naturalWidth),
+    Math.min(Math.floor(regionHeight), sourceImage.naturalHeight)
+  );
+  
+  onProgress?.({ progress: 5, phase: "Starting super-smart analysis..." });
+  await new Promise(resolve => setTimeout(resolve, 0));
+  
+  // Common pixel art grid sizes to test
+  const gridSizes = [8, 12, 14, 16, 18, 20, 24, 28, 32, 40, 48, 64];
+  
+  let bestResult = {
+    gridSize: 16,
+    pitch: imageData.width / 16,
+    offsetX: 0,
+    offsetY: 0,
+    score: Infinity
+  };
+  
+  // Phase 1: Test each candidate grid size
+  onProgress?.({ progress: 10, phase: "Testing candidate grid sizes..." });
+  await new Promise(resolve => setTimeout(resolve, 0));
+  
+  for (let i = 0; i < gridSizes.length; i++) {
+    const gridSize = gridSizes[i];
+    if (gridSize === undefined) continue;
+    
+    const pitch = imageData.width / gridSize;
+    
+    // Skip if pitch is too small (less than 4 pixels per cell)
+    if (pitch < 4) continue;
+    
+    // Find best offset for this pitch
+    const result = findBestOffsetForPitch(imageData, pitch, 16);
+    
+    if (result.score < bestResult.score) {
+      bestResult = {
+        gridSize,
+        pitch,
+        offsetX: result.offsetX,
+        offsetY: result.offsetY,
+        score: result.score
+      };
+    }
+    
+    const progress = 10 + (i / gridSizes.length) * 40;
+    onProgress?.({
+      progress,
+      phase: `Testing ${gridSize}×${gridSize} grid...`,
+      currentBest: { width: bestResult.gridSize, height: bestResult.gridSize }
+    });
+    await new Promise(resolve => setTimeout(resolve, 0));
+  }
+  
+  // Phase 2: Fine-tune the best result with more offset precision
+  onProgress?.({
+    progress: 55,
+    phase: `Fine-tuning ${bestResult.gridSize}×${bestResult.gridSize} alignment...`,
+    currentBest: { width: bestResult.gridSize, height: bestResult.gridSize }
+  });
+  await new Promise(resolve => setTimeout(resolve, 0));
+  
+  // High-precision offset search for the best grid size
+  const fineResult = findBestOffsetForPitch(imageData, bestResult.pitch, 32);
+  if (fineResult.score < bestResult.score) {
+    bestResult.offsetX = fineResult.offsetX;
+    bestResult.offsetY = fineResult.offsetY;
+    bestResult.score = fineResult.score;
+  }
+  
+  // Phase 3: Also test grid sizes around the best one
+  onProgress?.({
+    progress: 70,
+    phase: "Testing nearby grid sizes...",
+    currentBest: { width: bestResult.gridSize, height: bestResult.gridSize }
+  });
+  await new Promise(resolve => setTimeout(resolve, 0));
+  
+  const nearbyGridSizes = [
+    bestResult.gridSize - 2,
+    bestResult.gridSize - 1,
+    bestResult.gridSize + 1,
+    bestResult.gridSize + 2
+  ].filter(s => s >= 8 && s <= 128);
+  
+  for (const gridSize of nearbyGridSizes) {
+    const pitch = imageData.width / gridSize;
+    if (pitch < 4) continue;
+    
+    const result = findBestOffsetForPitch(imageData, pitch, 32);
+    
+    if (result.score < bestResult.score) {
+      bestResult = {
+        gridSize,
+        pitch,
+        offsetX: result.offsetX,
+        offsetY: result.offsetY,
+        score: result.score
+      };
+    }
+  }
+  
+  // Phase 4: Final ultra-fine offset optimization
+  onProgress?.({
+    progress: 85,
+    phase: `Final optimization for ${bestResult.gridSize}×${bestResult.gridSize}...`,
+    currentBest: { width: bestResult.gridSize, height: bestResult.gridSize }
+  });
+  await new Promise(resolve => setTimeout(resolve, 0));
+  
+  const ultraFineResult = findBestOffsetForPitch(imageData, bestResult.pitch, 64);
+  if (ultraFineResult.score < bestResult.score) {
+    bestResult.offsetX = ultraFineResult.offsetX;
+    bestResult.offsetY = ultraFineResult.offsetY;
+    bestResult.score = ultraFineResult.score;
+  }
+  
+  // Calculate confidence based on how good the score is
+  // Lower scores indicate better alignment
+  const confidence = Math.max(0, Math.min(1, 1 - bestResult.score / 100));
+  
+  onProgress?.({
+    progress: 100,
+    phase: `Complete: ${bestResult.gridSize}×${bestResult.gridSize}`,
+    currentBest: { width: bestResult.gridSize, height: bestResult.gridSize }
+  });
+  
+  return {
+    width: bestResult.gridSize,
+    height: bestResult.gridSize,
+    offsetX: bestResult.offsetX,
+    offsetY: bestResult.offsetY,
+    pitch: bestResult.pitch,
+    score: bestResult.score,
+    confidence
+  };
+}
