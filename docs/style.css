@@ -161,6 +161,22 @@ body {
   stroke-width: 2;
 }
 
+.pixel-grid-lines {
+  fill: none;
+  stroke: #ffffff;
+  stroke-width: 1;
+  mix-blend-mode: difference;
+  pointer-events: none;
+}
+
+.pixel-grid-circle {
+  fill: none;
+  stroke: #ffffff;
+  stroke-width: 1;
+  mix-blend-mode: difference;
+  pointer-events: none;
+}
+
 .preview-canvas {
   background: #0f0f1a;
   border-radius: 4px;

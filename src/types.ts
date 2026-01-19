@@ -26,6 +26,7 @@ export interface AppState {
   maxColors: number;
   enableColorLimit: boolean;
   enableBackgroundDetection: boolean;
+  showPixelGrid: boolean;
 }
 
 export type ColorMethod = 
@@ -93,7 +94,8 @@ export const DEFAULT_STATE: AppState = {
   selectionMode: "transform",
   maxColors: 32,
   enableColorLimit: true,
-  enableBackgroundDetection: true
+  enableBackgroundDetection: true,
+  showPixelGrid: false
 };
 
 const STORAGE_KEY = "pbs-app-state";
