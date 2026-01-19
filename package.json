@@ -21,7 +21,6 @@
     "typescript": "^5.9.0-beta"
   },
   "dependencies": {
-    "preact": "^10.25.4",
-    "sharp": "^0.34.5"
+    "preact": "^10.25.4"
   }
 }

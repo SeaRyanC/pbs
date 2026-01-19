@@ -1345,6 +1345,11 @@ export async function inferDimensions(
  * - Distinct color differences BETWEEN adjacent cells (high inter-cell variance)
  */
 
+// Constants for super-smart mode algorithm
+const DEFAULT_SAMPLE_RATIO = 0.3;
+const VARIANCE_SMOOTHING_FACTOR = 1;
+const CONFIDENCE_SCALE_FACTOR = 100;
+
 export interface SuperSmartResult {
   width: number;
   height: number;
@@ -1365,7 +1370,7 @@ export interface SuperSmartProgress {
  * Calculate the super-smart score for a given configuration.
  * Lower score is better.
  * 
- * The score is: intra-cell variance / (inter-cell variance + 1)
+ * The score is: intra-cell variance / (inter-cell variance + VARIANCE_SMOOTHING_FACTOR)
  * This favors configurations where cells are uniform internally but distinct from each other.
  */
 function calculateSuperSmartScore(
@@ -1373,7 +1378,7 @@ function calculateSuperSmartScore(
   pitch: number,
   offsetX: number,
   offsetY: number,
-  sampleRatio: number = 0.3
+  sampleRatio: number = DEFAULT_SAMPLE_RATIO
 ): number {
   const gridWidth = Math.floor((imageData.width - offsetX) / pitch);
   const gridHeight = Math.floor((imageData.height - offsetY) / pitch);
@@ -1460,9 +1465,9 @@ function calculateSuperSmartScore(
   
   // Score: low intra-cell variance, high inter-cell variance
   // Lower is better
-  // Normalize by pitch^2 to strongly prefer smaller grid sizes (more cells)
-  // This is because pixel art typically has 16-64 pixel grids, not 100+
-  const normalizedScore = (avgIntraVariance / (Math.sqrt(interCellVariance) + 1)) * pitch;
+  // Normalize by pitch to make scores comparable across grid sizes
+  // VARIANCE_SMOOTHING_FACTOR prevents division by zero
+  const normalizedScore = (avgIntraVariance / (Math.sqrt(interCellVariance) + VARIANCE_SMOOTHING_FACTOR)) * pitch;
   
   return normalizedScore;
 }
@@ -1655,7 +1660,7 @@ export async function inferDimensionsSuperSmart(
   
   // Calculate confidence based on how good the score is
   // Lower scores indicate better alignment
-  const confidence = Math.max(0, Math.min(1, 1 - bestResult.score / 100));
+  const confidence = Math.max(0, Math.min(1, 1 - bestResult.score / CONFIDENCE_SCALE_FACTOR));
   
   onProgress?.({
     progress: 100,

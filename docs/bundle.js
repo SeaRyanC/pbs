@@ -1378,7 +1378,10 @@ async function inferDimensions(sourceImage, corners, currentWidth, currentHeight
     confidence
   };
 }
-function calculateSuperSmartScore(imageData, pitch, offsetX, offsetY, sampleRatio = 0.3) {
+var DEFAULT_SAMPLE_RATIO = 0.3;
+var VARIANCE_SMOOTHING_FACTOR = 1;
+var CONFIDENCE_SCALE_FACTOR = 100;
+function calculateSuperSmartScore(imageData, pitch, offsetX, offsetY, sampleRatio = DEFAULT_SAMPLE_RATIO) {
   const gridWidth = Math.floor((imageData.width - offsetX) / pitch);
   const gridHeight = Math.floor((imageData.height - offsetY) / pitch);
   if (gridWidth < 4 || gridHeight < 4) return Infinity;
@@ -1442,7 +1445,7 @@ function calculateSuperSmartScore(imageData, pitch, offsetX, offsetY, sampleRati
     interCellVariance += (mean.b - globalMean.b) ** 2;
   }
   interCellVariance /= cellMeans.length;
-  const normalizedScore = avgIntraVariance / (Math.sqrt(interCellVariance) + 1) * pitch;
+  const normalizedScore = avgIntraVariance / (Math.sqrt(interCellVariance) + VARIANCE_SMOOTHING_FACTOR) * pitch;
   return normalizedScore;
 }
 function findBestOffsetForPitch(imageData, pitch, offsetSteps = 16) {
@@ -1575,7 +1578,7 @@ async function inferDimensionsSuperSmart(sourceImage, corners, onProgress) {
     bestResult.offsetY = ultraFineResult.offsetY;
     bestResult.score = ultraFineResult.score;
   }
-  const confidence = Math.max(0, Math.min(1, 1 - bestResult.score / 100));
+  const confidence = Math.max(0, Math.min(1, 1 - bestResult.score / CONFIDENCE_SCALE_FACTOR));
   onProgress?.({
     progress: 100,
     phase: `Complete: ${bestResult.gridSize}\xD7${bestResult.gridSize}`,
