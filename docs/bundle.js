@@ -441,7 +441,11 @@ var DEFAULT_STATE = {
   outputWidth: 64,
   outputHeight: 64,
   colorMethod: "mean",
-  isometric: true
+  isometric: true,
+  selectionMode: "transform",
+  maxColors: 32,
+  enableColorLimit: true,
+  enableBackgroundDetection: true
 };
 var STORAGE_KEY = "pbs-app-state";
 function saveState(state) {
@@ -654,7 +658,354 @@ function computeCellColor(pixels, method) {
       return meanColor(pixels);
   }
 }
-function generatePixelatedImage(sourceImage, corners, outputWidth, outputHeight, colorMethod) {
+function srgbToLinear(value) {
+  const normalized = value / 255;
+  if (normalized <= 0.04045) {
+    return normalized / 12.92;
+  }
+  return Math.pow((normalized + 0.055) / 1.055, 2.4);
+}
+function linearToSrgb(value) {
+  if (value <= 31308e-7) {
+    return Math.round(Math.min(255, Math.max(0, value * 12.92 * 255)));
+  }
+  return Math.round(Math.min(255, Math.max(0, (1.055 * Math.pow(value, 1 / 2.4) - 0.055) * 255)));
+}
+function pqEotf(value) {
+  const m1 = 0.1593017578125;
+  const m22 = 78.84375;
+  const c1 = 0.8359375;
+  const c22 = 18.8515625;
+  const c3 = 18.6875;
+  const Vm2 = Math.pow(Math.max(0, value), m22);
+  const num = Math.max(Vm2 - c1, 0);
+  const denom = c22 - c3 * Vm2;
+  return Math.pow(num / denom, 1 / m1);
+}
+function pqInverseEotf(value) {
+  const m1 = 0.1593017578125;
+  const m22 = 78.84375;
+  const c1 = 0.8359375;
+  const c22 = 18.8515625;
+  const c3 = 18.6875;
+  const Ym1 = Math.pow(Math.max(0, value), m1);
+  const num = c1 + c22 * Ym1;
+  const denom = 1 + c3 * Ym1;
+  return Math.pow(num / denom, m22);
+}
+function rgbToIctcp(rgba) {
+  const r3 = srgbToLinear(rgba.r);
+  const g2 = srgbToLinear(rgba.g);
+  const b = srgbToLinear(rgba.b);
+  const l3 = 0.412109 * r3 + 0.523925 * g2 + 0.063965 * b;
+  const m3 = 0.166748 * r3 + 0.720459 * g2 + 0.112793 * b;
+  const s3 = 0.02417 * r3 + 0.07544 * g2 + 0.90039 * b;
+  const lPrime = pqInverseEotf(l3);
+  const mPrime = pqInverseEotf(m3);
+  const sPrime = pqInverseEotf(s3);
+  const i4 = 0.5 * lPrime + 0.5 * mPrime;
+  const ct = 1.613769 * lPrime - 3.323486 * mPrime + 1.709717 * sPrime;
+  const cp = 4.378152 * lPrime - 4.245608 * mPrime - 0.132544 * sPrime;
+  return { i: i4, ct, cp };
+}
+function ictcpToRgb(ictcp) {
+  const { i: i4, ct, cp } = ictcp;
+  const lPrime = i4 + 8609e-6 * ct + 0.11103 * cp;
+  const mPrime = i4 - 8609e-6 * ct - 0.11103 * cp;
+  const sPrime = i4 + 0.560031 * ct - 0.320627 * cp;
+  const l3 = pqEotf(lPrime);
+  const m3 = pqEotf(mPrime);
+  const s3 = pqEotf(sPrime);
+  const r3 = 3.436607 * l3 - 2.506201 * m3 + 0.069594 * s3;
+  const g2 = -0.791329 * l3 + 1.9836 * m3 - 0.192271 * s3;
+  const b = -0.02595 * l3 - 0.09893 * m3 + 1.12488 * s3;
+  return {
+    r: linearToSrgb(r3),
+    g: linearToSrgb(g2),
+    b: linearToSrgb(b),
+    a: 255
+  };
+}
+function ictcpDistanceSquared(a3, b) {
+  const di = a3.i - b.i;
+  const dct = a3.ct - b.ct;
+  const dcp = a3.cp - b.cp;
+  return di * di + dct * dct + dcp * dcp;
+}
+function initializeCentroidsKMeansPlusPlus(colors, k3) {
+  if (colors.length <= k3) {
+    return colors.slice();
+  }
+  if (colors.length === 0) {
+    return [];
+  }
+  const centroids = [];
+  const usedIndices = /* @__PURE__ */ new Set();
+  const firstIdx = Math.floor(Math.random() * colors.length);
+  const firstColor = colors[firstIdx];
+  if (firstColor) {
+    centroids.push({ ...firstColor });
+    usedIndices.add(firstIdx);
+  }
+  for (let i4 = 1; i4 < k3 && i4 < colors.length; i4++) {
+    const distances = [];
+    let totalDist = 0;
+    for (let j3 = 0; j3 < colors.length; j3++) {
+      if (usedIndices.has(j3)) {
+        distances.push(0);
+        continue;
+      }
+      const color = colors[j3];
+      if (!color) {
+        distances.push(0);
+        continue;
+      }
+      let minDist = Infinity;
+      for (const centroid of centroids) {
+        const dist = ictcpDistanceSquared(color, centroid);
+        minDist = Math.min(minDist, dist);
+      }
+      distances.push(minDist);
+      totalDist += minDist;
+    }
+    let threshold = Math.random() * totalDist;
+    let chosenIdx = 0;
+    for (let j3 = 0; j3 < distances.length; j3++) {
+      const dist = distances[j3];
+      if (dist !== void 0) {
+        threshold -= dist;
+        if (threshold <= 0) {
+          chosenIdx = j3;
+          break;
+        }
+      }
+    }
+    const chosenColor = colors[chosenIdx];
+    if (chosenColor) {
+      centroids.push({ ...chosenColor });
+      usedIndices.add(chosenIdx);
+    }
+  }
+  return centroids;
+}
+function kMeansClusterColors(colors, maxColors, maxIterations = 20) {
+  if (colors.length <= maxColors) {
+    return colors;
+  }
+  const ictcpColors = colors.map((c3) => rgbToIctcp(c3));
+  const uniqueColorMap = /* @__PURE__ */ new Map();
+  for (let i4 = 0; i4 < colors.length; i4++) {
+    const color = colors[i4];
+    const ictcpColor = ictcpColors[i4];
+    if (!color || !ictcpColor) continue;
+    const key = `${color.r},${color.g},${color.b}`;
+    const existing = uniqueColorMap.get(key);
+    if (existing) {
+      existing.count++;
+    } else {
+      uniqueColorMap.set(key, { ictcp: ictcpColor, rgba: color, count: 1 });
+    }
+  }
+  const uniqueColors = Array.from(uniqueColorMap.values());
+  if (uniqueColors.length <= maxColors) {
+    return uniqueColors.map((c3) => c3.rgba);
+  }
+  let centroids = initializeCentroidsKMeansPlusPlus(
+    uniqueColors.map((c3) => c3.ictcp),
+    maxColors
+  );
+  for (let iter = 0; iter < maxIterations; iter++) {
+    const clusters = centroids.map((c3) => ({
+      colors: [],
+      ictcp: c3
+    }));
+    for (const color of uniqueColors) {
+      let minDist = Infinity;
+      let nearestIdx = 0;
+      for (let i4 = 0; i4 < centroids.length; i4++) {
+        const centroid = centroids[i4];
+        if (!centroid) continue;
+        const dist = ictcpDistanceSquared(color.ictcp, centroid);
+        if (dist < minDist) {
+          minDist = dist;
+          nearestIdx = i4;
+        }
+      }
+      const cluster = clusters[nearestIdx];
+      if (cluster) {
+        cluster.colors.push(color);
+      }
+    }
+    let converged = true;
+    const newCentroids = [];
+    for (const cluster of clusters) {
+      if (cluster.colors.length === 0) {
+        newCentroids.push(cluster.ictcp);
+        continue;
+      }
+      let sumI = 0, sumCt = 0, sumCp = 0, totalWeight = 0;
+      for (const color of cluster.colors) {
+        sumI += color.ictcp.i * color.count;
+        sumCt += color.ictcp.ct * color.count;
+        sumCp += color.ictcp.cp * color.count;
+        totalWeight += color.count;
+      }
+      const newCentroid = {
+        i: sumI / totalWeight,
+        ct: sumCt / totalWeight,
+        cp: sumCp / totalWeight
+      };
+      if (ictcpDistanceSquared(newCentroid, cluster.ictcp) > 1e-10) {
+        converged = false;
+      }
+      newCentroids.push(newCentroid);
+    }
+    centroids = newCentroids;
+    if (converged) break;
+  }
+  return centroids.map((c3) => ictcpToRgb(c3));
+}
+function applyColorQuantization(output, maxColors) {
+  const colors = [];
+  for (let i4 = 0; i4 < output.data.length; i4 += 4) {
+    const a3 = output.data[i4 + 3];
+    if (a3 !== void 0 && a3 > 0) {
+      const r3 = output.data[i4];
+      const g2 = output.data[i4 + 1];
+      const b = output.data[i4 + 2];
+      if (r3 !== void 0 && g2 !== void 0 && b !== void 0) {
+        colors.push({ r: r3, g: g2, b, a: a3 });
+      }
+    }
+  }
+  if (colors.length === 0) return;
+  const palette = kMeansClusterColors(colors, maxColors);
+  if (palette.length === 0) return;
+  const paletteIctcp = palette.map((c3) => rgbToIctcp(c3));
+  for (let i4 = 0; i4 < output.data.length; i4 += 4) {
+    const a3 = output.data[i4 + 3];
+    if (a3 === void 0 || a3 === 0) continue;
+    const r3 = output.data[i4];
+    const g2 = output.data[i4 + 1];
+    const b = output.data[i4 + 2];
+    if (r3 === void 0 || g2 === void 0 || b === void 0) continue;
+    const pixel = { r: r3, g: g2, b, a: a3 };
+    const pixelIctcp = rgbToIctcp(pixel);
+    let minDist = Infinity;
+    let nearestIdx = 0;
+    for (let j3 = 0; j3 < paletteIctcp.length; j3++) {
+      const paletteColor = paletteIctcp[j3];
+      if (!paletteColor) continue;
+      const dist = ictcpDistanceSquared(pixelIctcp, paletteColor);
+      if (dist < minDist) {
+        minDist = dist;
+        nearestIdx = j3;
+      }
+    }
+    const nearestColor = palette[nearestIdx];
+    if (nearestColor) {
+      output.data[i4] = nearestColor.r;
+      output.data[i4 + 1] = nearestColor.g;
+      output.data[i4 + 2] = nearestColor.b;
+    }
+  }
+}
+function detectAndRemoveBackground(output, imageData, corners, outputWidth, outputHeight) {
+  const borderColors = [];
+  const borderThreshold = 0.05;
+  const isOutsideOriginalBounds = (u4, v3) => {
+    const point = perspectiveTransform(corners, u4, v3);
+    return point.x < 0 || point.x >= imageData.width || point.y < 0 || point.y >= imageData.height;
+  };
+  for (let y3 = 0; y3 < outputHeight; y3++) {
+    for (let x2 = 0; x2 < outputWidth; x2++) {
+      const u4 = (x2 + 0.5) / outputWidth;
+      const v3 = (y3 + 0.5) / outputHeight;
+      const isBorder = u4 < borderThreshold || u4 > 1 - borderThreshold || v3 < borderThreshold || v3 > 1 - borderThreshold;
+      if (isBorder) {
+        const idx = (y3 * outputWidth + x2) * 4;
+        if (output.data[idx + 3] > 0) {
+          borderColors.push({
+            r: output.data[idx],
+            g: output.data[idx + 1],
+            b: output.data[idx + 2],
+            a: output.data[idx + 3]
+          });
+        }
+      }
+    }
+  }
+  if (borderColors.length === 0) return;
+  const colorCounts = /* @__PURE__ */ new Map();
+  for (const color of borderColors) {
+    const qr = Math.round(color.r / 8) * 8;
+    const qg = Math.round(color.g / 8) * 8;
+    const qb = Math.round(color.b / 8) * 8;
+    const key = `${qr},${qg},${qb}`;
+    const existing = colorCounts.get(key);
+    if (existing) {
+      existing.count++;
+    } else {
+      colorCounts.set(key, { color: { r: qr, g: qg, b: qb, a: 255 }, count: 1 });
+    }
+  }
+  let maxCount = 0;
+  let backgroundColor = null;
+  for (const { color, count } of colorCounts.values()) {
+    if (count > maxCount) {
+      maxCount = count;
+      backgroundColor = color;
+    }
+  }
+  if (!backgroundColor || maxCount < borderColors.length * 0.5) return;
+  const bgIctcp = rgbToIctcp(backgroundColor);
+  const colorThreshold = 0.02;
+  const isBackground = new Array(outputWidth * outputHeight).fill(false);
+  const visited = new Array(outputWidth * outputHeight).fill(false);
+  const isColorSimilar = (idx) => {
+    const pixel = {
+      r: output.data[idx * 4],
+      g: output.data[idx * 4 + 1],
+      b: output.data[idx * 4 + 2],
+      a: output.data[idx * 4 + 3]
+    };
+    if (pixel.a === 0) return true;
+    const pixelIctcp = rgbToIctcp(pixel);
+    return ictcpDistanceSquared(pixelIctcp, bgIctcp) < colorThreshold;
+  };
+  const queue = [];
+  for (let x2 = 0; x2 < outputWidth; x2++) {
+    queue.push(x2);
+    queue.push((outputHeight - 1) * outputWidth + x2);
+  }
+  for (let y3 = 1; y3 < outputHeight - 1; y3++) {
+    queue.push(y3 * outputWidth);
+    queue.push(y3 * outputWidth + outputWidth - 1);
+  }
+  while (queue.length > 0) {
+    const idx = queue.pop();
+    if (visited[idx]) continue;
+    visited[idx] = true;
+    if (!isColorSimilar(idx)) continue;
+    isBackground[idx] = true;
+    const x2 = idx % outputWidth;
+    const y3 = Math.floor(idx / outputWidth);
+    if (x2 > 0 && !visited[idx - 1]) queue.push(idx - 1);
+    if (x2 < outputWidth - 1 && !visited[idx + 1]) queue.push(idx + 1);
+    if (y3 > 0 && !visited[idx - outputWidth]) queue.push(idx - outputWidth);
+    if (y3 < outputHeight - 1 && !visited[idx + outputWidth]) queue.push(idx + outputWidth);
+  }
+  for (let i4 = 0; i4 < isBackground.length; i4++) {
+    if (isBackground[i4]) {
+      output.data[i4 * 4 + 3] = 0;
+    }
+  }
+}
+function generatePixelatedImage(sourceImage, corners, outputWidth, outputHeight, colorMethod, options = {
+  enableColorLimit: true,
+  maxColors: 32,
+  enableBackgroundDetection: true
+}) {
   const tempCanvas = document.createElement("canvas");
   tempCanvas.width = sourceImage.naturalWidth;
   tempCanvas.height = sourceImage.naturalHeight;
@@ -682,6 +1033,12 @@ function generatePixelatedImage(sourceImage, corners, outputWidth, outputHeight,
       output.data[idx + 2] = color.b;
       output.data[idx + 3] = color.a;
     }
+  }
+  if (options.enableBackgroundDetection) {
+    detectAndRemoveBackground(output, imageData, corners, outputWidth, outputHeight);
+  }
+  if (options.enableColorLimit && options.maxColors > 0) {
+    applyColorQuantization(output, options.maxColors);
   }
   return output;
 }
@@ -758,15 +1115,27 @@ function u3(e3, t3, n2, o3, i4, u4) {
 }
 
 // src/App.tsx
+function transformCorner(point, center, angleDeg, scale) {
+  const rotated = rotatePoint(point, center, angleDeg);
+  return {
+    x: center.x + (rotated.x - center.x) * scale,
+    y: center.y + (rotated.y - center.y) * scale
+  };
+}
 function App() {
   const [state, setState] = h2(loadState);
   const [imageElement, setImageElement] = h2(null);
   const [isDragging, setIsDragging] = h2(false);
   const [dragCorner, setDragCorner] = h2(null);
   const [isDragOver, setIsDragOver] = h2(false);
+  const [dragStartPos, setDragStartPos] = h2(null);
+  const [dragStartCorners, setDragStartCorners] = h2(null);
+  const [dragStartRotation, setDragStartRotation] = h2(0);
+  const [imageOffset, setImageOffset] = h2({ x: 0, y: 0 });
   const containerRef = A2(null);
   const previewCanvasRef = A2(null);
   const fileInputRef = A2(null);
+  const sourceImageRef = A2(null);
   y2(() => {
     saveState(state);
   }, [state]);
@@ -798,59 +1167,108 @@ function App() {
       skewedCorners,
       state.outputWidth,
       state.outputHeight,
-      state.colorMethod
+      state.colorMethod,
+      {
+        enableColorLimit: state.enableColorLimit,
+        maxColors: state.maxColors,
+        enableBackgroundDetection: state.enableBackgroundDetection
+      }
     );
     ctx.putImageData(pixelData, 0, 0);
-  }, [imageElement, state.gridCorners, state.outputWidth, state.outputHeight, state.colorMethod, state.perspectiveSkewX, state.perspectiveSkewY, state.isometric]);
+  }, [imageElement, state.gridCorners, state.outputWidth, state.outputHeight, state.colorMethod, state.perspectiveSkewX, state.perspectiveSkewY, state.isometric, state.enableColorLimit, state.maxColors, state.enableBackgroundDetection]);
+  const updateImageOffset = q2(() => {
+    if (!sourceImageRef.current || !containerRef.current) return;
+    const imgEl = sourceImageRef.current;
+    const container = containerRef.current;
+    const containerRect = container.getBoundingClientRect();
+    const imgRect = imgEl.getBoundingClientRect();
+    setImageOffset({
+      x: imgRect.left - containerRect.left,
+      y: imgRect.top - containerRect.top
+    });
+  }, []);
+  y2(() => {
+    if (imageElement) {
+      const timer = setTimeout(updateImageOffset, 50);
+      window.addEventListener("resize", updateImageOffset);
+      return () => {
+        clearTimeout(timer);
+        window.removeEventListener("resize", updateImageOffset);
+      };
+    }
+    return void 0;
+  }, [imageElement, updateImageOffset]);
   const scaleCorners = q2((corners2, img) => {
     const container = containerRef.current;
+    const imgEl = sourceImageRef.current;
     if (!container || !img) return corners2;
-    const rect = container.getBoundingClientRect();
-    const displayedWidth = Math.min(rect.width, img.naturalWidth);
-    const displayedHeight = Math.min(rect.height, img.naturalHeight);
-    const aspectRatio = img.naturalWidth / img.naturalHeight;
-    let actualWidth = displayedWidth;
-    let actualHeight = displayedWidth / aspectRatio;
-    if (actualHeight > displayedHeight) {
-      actualHeight = displayedHeight;
-      actualWidth = displayedHeight * aspectRatio;
+    let actualWidth;
+    let actualHeight;
+    if (imgEl) {
+      actualWidth = imgEl.clientWidth;
+      actualHeight = imgEl.clientHeight;
+    } else {
+      const rect = container.getBoundingClientRect();
+      const displayedWidth = Math.min(rect.width, img.naturalWidth);
+      const displayedHeight = Math.min(rect.height, img.naturalHeight);
+      const aspectRatio = img.naturalWidth / img.naturalHeight;
+      actualWidth = displayedWidth;
+      actualHeight = displayedWidth / aspectRatio;
+      if (actualHeight > displayedHeight) {
+        actualHeight = displayedHeight;
+        actualWidth = displayedHeight * aspectRatio;
+      }
     }
     const scaleX = img.naturalWidth / actualWidth;
     const scaleY = img.naturalHeight / actualHeight;
     return {
-      topLeft: { x: corners2.topLeft.x * scaleX, y: corners2.topLeft.y * scaleY },
-      topRight: { x: corners2.topRight.x * scaleX, y: corners2.topRight.y * scaleY },
-      bottomLeft: { x: corners2.bottomLeft.x * scaleX, y: corners2.bottomLeft.y * scaleY },
-      bottomRight: { x: corners2.bottomRight.x * scaleX, y: corners2.bottomRight.y * scaleY }
+      topLeft: { x: (corners2.topLeft.x - imageOffset.x) * scaleX, y: (corners2.topLeft.y - imageOffset.y) * scaleY },
+      topRight: { x: (corners2.topRight.x - imageOffset.x) * scaleX, y: (corners2.topRight.y - imageOffset.y) * scaleY },
+      bottomLeft: { x: (corners2.bottomLeft.x - imageOffset.x) * scaleX, y: (corners2.bottomLeft.y - imageOffset.y) * scaleY },
+      bottomRight: { x: (corners2.bottomRight.x - imageOffset.x) * scaleX, y: (corners2.bottomRight.y - imageOffset.y) * scaleY }
     };
-  }, []);
+  }, [imageOffset]);
   const handleImageLoad = q2((dataUrl) => {
     const img = new Image();
     img.onload = () => {
-      const padding = 50;
       const container = containerRef.current;
-      let width = 400;
-      let height = 400;
       if (container) {
         const rect = container.getBoundingClientRect();
         const aspectRatio = img.naturalWidth / img.naturalHeight;
-        width = Math.min(rect.width - padding * 2, 600);
-        height = width / aspectRatio;
-        if (height > rect.height - padding * 2) {
-          height = Math.min(rect.height - padding * 2, 600);
-          width = height * aspectRatio;
+        let displayWidth = rect.width;
+        let displayHeight = rect.width / aspectRatio;
+        if (displayHeight > rect.height) {
+          displayHeight = rect.height;
+          displayWidth = rect.height * aspectRatio;
         }
+        const offsetX = (rect.width - displayWidth) / 2;
+        const offsetY = (rect.height - displayHeight) / 2;
+        const padding = 20;
+        setState((prev) => ({
+          ...prev,
+          sourceImage: dataUrl,
+          gridCorners: {
+            topLeft: { x: offsetX + padding, y: offsetY + padding },
+            topRight: { x: offsetX + displayWidth - padding, y: offsetY + padding },
+            bottomLeft: { x: offsetX + padding, y: offsetY + displayHeight - padding },
+            bottomRight: { x: offsetX + displayWidth - padding, y: offsetY + displayHeight - padding }
+          }
+        }));
+      } else {
+        const padding = 50;
+        const width = 400;
+        const height = 400;
+        setState((prev) => ({
+          ...prev,
+          sourceImage: dataUrl,
+          gridCorners: {
+            topLeft: { x: padding, y: padding },
+            topRight: { x: width + padding, y: padding },
+            bottomLeft: { x: padding, y: height + padding },
+            bottomRight: { x: width + padding, y: height + padding }
+          }
+        }));
       }
-      setState((prev) => ({
-        ...prev,
-        sourceImage: dataUrl,
-        gridCorners: {
-          topLeft: { x: padding, y: padding },
-          topRight: { x: width + padding, y: padding },
-          bottomLeft: { x: padding, y: height + padding },
-          bottomRight: { x: width + padding, y: height + padding }
-        }
-      }));
     };
     img.src = dataUrl;
   }, []);
@@ -914,23 +1332,60 @@ function App() {
     e3.stopPropagation();
     setIsDragging(true);
     setDragCorner(corner);
-  }, []);
+    if (containerRef.current) {
+      const rect = containerRef.current.getBoundingClientRect();
+      setDragStartPos({ x: e3.clientX - rect.left, y: e3.clientY - rect.top });
+      setDragStartCorners(state.gridCorners);
+      setDragStartRotation(state.rotation);
+    }
+  }, [state.gridCorners, state.rotation]);
   const handleMouseMove = q2((e3) => {
     if (!isDragging || !dragCorner || !containerRef.current) return;
     const rect = containerRef.current.getBoundingClientRect();
     const x2 = e3.clientX - rect.left;
     const y3 = e3.clientY - rect.top;
-    setState((prev) => ({
-      ...prev,
-      gridCorners: {
-        ...prev.gridCorners,
-        [dragCorner]: { x: x2, y: y3 }
+    setState((prev) => {
+      if (prev.selectionMode === "corners") {
+        return {
+          ...prev,
+          gridCorners: {
+            ...prev.gridCorners,
+            [dragCorner]: { x: x2, y: y3 }
+          }
+        };
+      } else {
+        if (!dragStartPos || !dragStartCorners) return prev;
+        const center = getCornersCenter(dragStartCorners);
+        const startAngle = Math.atan2(dragStartPos.y - center.y, dragStartPos.x - center.x);
+        const currentAngle = Math.atan2(y3 - center.y, x2 - center.x);
+        const angleDelta = (currentAngle - startAngle) * 180 / Math.PI;
+        const startDist = Math.sqrt(
+          Math.pow(dragStartPos.x - center.x, 2) + Math.pow(dragStartPos.y - center.y, 2)
+        );
+        const currentDist = Math.sqrt(
+          Math.pow(x2 - center.x, 2) + Math.pow(y3 - center.y, 2)
+        );
+        const scaleFactor = startDist > 0 ? currentDist / startDist : 1;
+        const newCorners = {
+          topLeft: transformCorner(dragStartCorners.topLeft, center, angleDelta, scaleFactor),
+          topRight: transformCorner(dragStartCorners.topRight, center, angleDelta, scaleFactor),
+          bottomLeft: transformCorner(dragStartCorners.bottomLeft, center, angleDelta, scaleFactor),
+          bottomRight: transformCorner(dragStartCorners.bottomRight, center, angleDelta, scaleFactor)
+        };
+        return {
+          ...prev,
+          rotation: dragStartRotation + angleDelta,
+          gridCorners: newCorners
+        };
       }
-    }));
-  }, [isDragging, dragCorner]);
+    });
+  }, [isDragging, dragCorner, dragStartPos, dragStartCorners, dragStartRotation]);
   const handleMouseUp = q2(() => {
     setIsDragging(false);
     setDragCorner(null);
+    setDragStartPos(null);
+    setDragStartCorners(null);
+    setDragStartRotation(0);
   }, []);
   y2(() => {
     if (isDragging) {
@@ -991,21 +1446,23 @@ function App() {
   const handleResetGrid = q2(() => {
     if (!imageElement || !containerRef.current) return;
     const rect = containerRef.current.getBoundingClientRect();
-    const padding = 50;
     const aspectRatio = imageElement.naturalWidth / imageElement.naturalHeight;
-    let width = Math.min(rect.width - padding * 2, 600);
-    let height = width / aspectRatio;
-    if (height > rect.height - padding * 2) {
-      height = Math.min(rect.height - padding * 2, 600);
-      width = height * aspectRatio;
+    let displayWidth = rect.width;
+    let displayHeight = rect.width / aspectRatio;
+    if (displayHeight > rect.height) {
+      displayHeight = rect.height;
+      displayWidth = rect.height * aspectRatio;
     }
+    const offsetX = (rect.width - displayWidth) / 2;
+    const offsetY = (rect.height - displayHeight) / 2;
+    const padding = 20;
     setState((prev) => ({
       ...prev,
       gridCorners: {
-        topLeft: { x: padding, y: padding },
-        topRight: { x: width + padding, y: padding },
-        bottomLeft: { x: padding, y: height + padding },
-        bottomRight: { x: width + padding, y: height + padding }
+        topLeft: { x: offsetX + padding, y: offsetY + padding },
+        topRight: { x: offsetX + displayWidth - padding, y: offsetY + padding },
+        bottomLeft: { x: offsetX + padding, y: offsetY + displayHeight - padding },
+        bottomRight: { x: offsetX + displayWidth - padding, y: offsetY + displayHeight - padding }
       },
       rotation: 0
     }));
@@ -1039,9 +1496,11 @@ function App() {
               /* @__PURE__ */ u3(
                 "img",
                 {
+                  ref: sourceImageRef,
                   src: state.sourceImage,
                   alt: "Source",
-                  class: "source-image"
+                  class: "source-image",
+                  onLoad: updateImageOffset
                 }
               ),
               /* @__PURE__ */ u3("div", { class: "grid-overlay", children: /* @__PURE__ */ u3("svg", { children: [
@@ -1094,10 +1553,7 @@ function App() {
             "canvas",
             {
               ref: previewCanvasRef,
-              style: {
-                width: `${Math.min(state.outputWidth * 4, 256)}px`,
-                height: `${Math.min(state.outputHeight * 4, 256)}px`
-              }
+              class: "preview-canvas-element"
             }
           ),
           state.sourceImage && /* @__PURE__ */ u3("div", { class: "btn-group", children: [
@@ -1260,6 +1716,85 @@ function App() {
               }
             )
           ] })
+        ] }),
+        /* @__PURE__ */ u3("div", { class: "settings-group", children: [
+          /* @__PURE__ */ u3("label", { children: "Selection Mode" }),
+          /* @__PURE__ */ u3("div", { class: "selection-mode-buttons", children: [
+            /* @__PURE__ */ u3(
+              "button",
+              {
+                class: `mode-btn ${state.selectionMode === "transform" ? "active" : ""}`,
+                onClick: () => setState((prev) => ({ ...prev, selectionMode: "transform" })),
+                children: "\u{1F504} Transform"
+              }
+            ),
+            /* @__PURE__ */ u3(
+              "button",
+              {
+                class: `mode-btn ${state.selectionMode === "corners" ? "active" : ""}`,
+                onClick: () => setState((prev) => ({ ...prev, selectionMode: "corners" })),
+                children: "\u{1F4D0} Corners"
+              }
+            )
+          ] }),
+          /* @__PURE__ */ u3("p", { style: { fontSize: "0.75rem", color: "#888", marginTop: "0.5rem" }, children: state.selectionMode === "transform" ? "Drag to rotate/scale the selection uniformly" : "Drag individual corners to adjust perspective" })
+        ] }),
+        /* @__PURE__ */ u3("div", { class: "settings-group", children: [
+          /* @__PURE__ */ u3("label", { children: "Color Quantization" }),
+          /* @__PURE__ */ u3("div", { style: { display: "flex", alignItems: "center", gap: "0.5rem", marginBottom: "0.5rem" }, children: [
+            /* @__PURE__ */ u3(
+              "input",
+              {
+                type: "checkbox",
+                id: "enableColorLimit",
+                checked: state.enableColorLimit,
+                onChange: (e3) => {
+                  const checked = e3.target.checked;
+                  setState((prev) => ({ ...prev, enableColorLimit: checked }));
+                }
+              }
+            ),
+            /* @__PURE__ */ u3("label", { htmlFor: "enableColorLimit", style: { fontSize: "0.75rem", color: "#888" }, children: "Limit output colors" })
+          ] }),
+          state.enableColorLimit && /* @__PURE__ */ u3("div", { children: [
+            /* @__PURE__ */ u3("label", { children: [
+              "Max Colors: ",
+              state.maxColors
+            ] }),
+            /* @__PURE__ */ u3(
+              "input",
+              {
+                type: "range",
+                min: "2",
+                max: "256",
+                value: state.maxColors,
+                onChange: (e3) => {
+                  const value = parseInt(e3.target.value, 10);
+                  setState((prev) => ({ ...prev, maxColors: value }));
+                }
+              }
+            )
+          ] }),
+          /* @__PURE__ */ u3("p", { style: { fontSize: "0.75rem", color: "#888", marginTop: "0.5rem" }, children: "Uses k-means clustering in ICtCp color space" })
+        ] }),
+        /* @__PURE__ */ u3("div", { class: "settings-group", children: [
+          /* @__PURE__ */ u3("label", { children: "Background Detection" }),
+          /* @__PURE__ */ u3("div", { style: { display: "flex", alignItems: "center", gap: "0.5rem" }, children: [
+            /* @__PURE__ */ u3(
+              "input",
+              {
+                type: "checkbox",
+                id: "enableBackgroundDetection",
+                checked: state.enableBackgroundDetection,
+                onChange: (e3) => {
+                  const checked = e3.target.checked;
+                  setState((prev) => ({ ...prev, enableBackgroundDetection: checked }));
+                }
+              }
+            ),
+            /* @__PURE__ */ u3("label", { htmlFor: "enableBackgroundDetection", style: { fontSize: "0.75rem", color: "#888" }, children: "Auto-remove uniform background" })
+          ] }),
+          /* @__PURE__ */ u3("p", { style: { fontSize: "0.75rem", color: "#888", marginTop: "0.5rem" }, children: "Detects and removes solid background fields" })
         ] })
       ] })
     ] })
