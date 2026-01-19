@@ -478,6 +478,9 @@ var ISOMETRIC_ANGLE_DEGREES = 30;
 var ISOMETRIC_SCALE_FACTOR = 0.5;
 var SKEW_INTENSITY = 0.1;
 var NON_ISOMETRIC_SKEW_FACTOR = 5;
+var CENTER_SPOT_RATIO = 0.2;
+var COARSE_SAMPLE_RATIO = 0.3;
+var FINE_SAMPLE_RATIO = 0.2;
 function perspectiveTransform(corners, u4, v3) {
   const { topLeft, topRight, bottomLeft, bottomRight } = corners;
   const topX = topLeft.x + (topRight.x - topLeft.x) * u4;
@@ -650,20 +653,22 @@ function centerWeightedColor(pixels) {
 function centerSpotColor(pixels) {
   if (pixels.length === 0) return { r: 0, g: 0, b: 0, a: 0 };
   const size = Math.sqrt(pixels.length);
-  if (size < 1) return meanColor(pixels);
-  const centerRatio = 0.2;
-  const margin = (1 - centerRatio) / 2;
-  const startIdx = Math.floor(margin * size);
-  const endIdx = Math.ceil((1 - margin) * size);
-  const actualStart = Math.min(startIdx, Math.floor(size / 2));
-  const actualEnd = Math.max(endIdx, Math.ceil(size / 2) + 1);
+  if (!Number.isInteger(size) || size < 1) {
+    return meanColor(pixels);
+  }
+  const margin = (1 - CENTER_SPOT_RATIO) / 2;
+  const centerIndex = Math.floor(size / 2);
+  const startIdx = Math.max(0, Math.min(Math.floor(margin * size), centerIndex));
+  const endIdx = Math.min(size, Math.max(Math.ceil((1 - margin) * size), centerIndex + 1));
   const centerPixels = [];
-  for (let row = actualStart; row < actualEnd && row < size; row++) {
-    for (let col = actualStart; col < actualEnd && col < size; col++) {
+  for (let row = startIdx; row < endIdx; row++) {
+    for (let col = startIdx; col < endIdx; col++) {
       const idx = row * size + col;
-      const pixel = pixels[idx];
-      if (pixel) {
-        centerPixels.push(pixel);
+      if (idx >= 0 && idx < pixels.length) {
+        const pixel = pixels[idx];
+        if (pixel) {
+          centerPixels.push(pixel);
+        }
       }
     }
   }
@@ -1200,7 +1205,7 @@ function calculateCellVarianceWithMethod(imageData, startX, startY, cellWidth, c
   }
   return variance / n2;
 }
-function calculatePitchScore(imageData, pitch, offsetX, offsetY, colorMethod, sampleRatio = 0.3) {
+function calculatePitchScore(imageData, pitch, offsetX, offsetY, colorMethod, sampleRatio = COARSE_SAMPLE_RATIO) {
   const gridWidth = Math.floor((imageData.width - offsetX) / pitch);
   const gridHeight = Math.floor((imageData.height - offsetY) / pitch);
   if (gridWidth < 2 || gridHeight < 2) return Infinity;
@@ -1235,7 +1240,7 @@ function findOptimalOffsetForPitch(imageData, pitch, colorMethod, offsetSteps = 
     for (let oy = 0; oy < offsetSteps; oy++) {
       const offsetX = ox / offsetSteps * pitch;
       const offsetY = oy / offsetSteps * pitch;
-      const score = calculatePitchScore(imageData, pitch, offsetX, offsetY, colorMethod, 0.2);
+      const score = calculatePitchScore(imageData, pitch, offsetX, offsetY, colorMethod, FINE_SAMPLE_RATIO);
       if (score < bestOffset.score) {
         bestOffset = { offsetX, offsetY, score };
       }

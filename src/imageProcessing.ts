@@ -13,6 +13,13 @@ const ISOMETRIC_SCALE_FACTOR = 0.5;
 const SKEW_INTENSITY = 0.1;
 const NON_ISOMETRIC_SKEW_FACTOR = 5;
 
+// Constants for center spot color sampling
+const CENTER_SPOT_RATIO = 0.2; // Sample from middle 20% of cell
+
+// Constants for infer dimensions sampling
+const COARSE_SAMPLE_RATIO = 0.3; // 30% sampling for coarse pitch search
+const FINE_SAMPLE_RATIO = 0.2; // 20% sampling for offset optimization
+
 export function perspectiveTransform(
   corners: GridCorners,
   u: number,
@@ -246,28 +253,30 @@ function centerSpotColor(pixels: RGBA[]): RGBA {
   
   // Pixels are arranged in a grid (sampleSize x sampleSize, typically 5x5)
   const size = Math.sqrt(pixels.length);
-  if (size < 1) return meanColor(pixels);
   
-  // Calculate the center 20% region
-  // For a 5x5 grid, middle 20% would be roughly the center pixel
-  // For larger grids, this becomes a small central region
-  const centerRatio = 0.2; // 20% of the cell
-  const margin = (1 - centerRatio) / 2; // 40% margin on each side
+  // If not a perfect square or too small, fall back to mean
+  if (!Number.isInteger(size) || size < 1) {
+    return meanColor(pixels);
+  }
   
-  const startIdx = Math.floor(margin * size);
-  const endIdx = Math.ceil((1 - margin) * size);
+  // Calculate the center region bounds
+  // For a 5x5 grid with 20% center, we want ~1 pixel in the middle
+  const margin = (1 - CENTER_SPOT_RATIO) / 2; // 40% margin on each side
   
-  // Ensure we get at least one pixel
-  const actualStart = Math.min(startIdx, Math.floor(size / 2));
-  const actualEnd = Math.max(endIdx, Math.ceil(size / 2) + 1);
+  // Calculate start and end indices, ensuring we get at least the center pixel
+  const centerIndex = Math.floor(size / 2);
+  const startIdx = Math.max(0, Math.min(Math.floor(margin * size), centerIndex));
+  const endIdx = Math.min(size, Math.max(Math.ceil((1 - margin) * size), centerIndex + 1));
   
   const centerPixels: RGBA[] = [];
-  for (let row = actualStart; row < actualEnd && row < size; row++) {
-    for (let col = actualStart; col < actualEnd && col < size; col++) {
+  for (let row = startIdx; row < endIdx; row++) {
+    for (let col = startIdx; col < endIdx; col++) {
       const idx = row * size + col;
-      const pixel = pixels[idx];
-      if (pixel) {
-        centerPixels.push(pixel);
+      if (idx >= 0 && idx < pixels.length) {
+        const pixel = pixels[idx];
+        if (pixel) {
+          centerPixels.push(pixel);
+        }
       }
     }
   }
@@ -1067,7 +1076,7 @@ function calculatePitchScore(
   offsetX: number,
   offsetY: number,
   colorMethod: ColorMethod,
-  sampleRatio: number = 0.3
+  sampleRatio: number = COARSE_SAMPLE_RATIO
 ): number {
   const gridWidth = Math.floor((imageData.width - offsetX) / pitch);
   const gridHeight = Math.floor((imageData.height - offsetY) / pitch);
@@ -1120,7 +1129,7 @@ function findOptimalOffsetForPitch(
       const offsetX = (ox / offsetSteps) * pitch;
       const offsetY = (oy / offsetSteps) * pitch;
       
-      const score = calculatePitchScore(imageData, pitch, offsetX, offsetY, colorMethod, 0.2);
+      const score = calculatePitchScore(imageData, pitch, offsetX, offsetY, colorMethod, FINE_SAMPLE_RATIO);
       
       if (score < bestOffset.score) {
         bestOffset = { offsetX, offsetY, score };
