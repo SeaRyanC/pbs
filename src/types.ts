@@ -10,6 +10,8 @@ export interface GridCorners {
   bottomRight: Point;
 }
 
+export type SelectionMode = "transform" | "corners";
+
 export interface AppState {
   sourceImage: string | null;
   gridCorners: GridCorners;
@@ -20,6 +22,10 @@ export interface AppState {
   outputHeight: number;
   colorMethod: ColorMethod;
   isometric: boolean;
+  selectionMode: SelectionMode;
+  maxColors: number;
+  enableColorLimit: boolean;
+  enableBackgroundDetection: boolean;
 }
 
 export type ColorMethod = 
@@ -77,7 +83,11 @@ export const DEFAULT_STATE: AppState = {
   outputWidth: 64,
   outputHeight: 64,
   colorMethod: "mean",
-  isometric: true
+  isometric: true,
+  selectionMode: "transform",
+  maxColors: 32,
+  enableColorLimit: true,
+  enableBackgroundDetection: true
 };
 
 const STORAGE_KEY = "pbs-app-state";

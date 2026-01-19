@@ -1,10 +1,19 @@
 import { render } from "preact";
 import { useState, useEffect, useRef, useCallback } from "preact/hooks";
-import type { AppState, Point, GridCorners, ColorMethod } from "./types";
+import type { AppState, Point, GridCorners, ColorMethod, SelectionMode } from "./types";
 import { DEFAULT_STATE, COLOR_METHODS, saveState, loadState } from "./types";
 import { generatePixelatedImage, getCornersCenter, rotatePoint, applyPerspectiveSkew } from "./imageProcessing";
 
 type CornerKey = keyof GridCorners;
+
+// Transform a corner point by rotating and scaling around a center
+function transformCorner(point: Point, center: Point, angleDeg: number, scale: number): Point {
+  const rotated = rotatePoint(point, center, angleDeg);
+  return {
+    x: center.x + (rotated.x - center.x) * scale,
+    y: center.y + (rotated.y - center.y) * scale
+  };
+}
 
 function App() {
   const [state, setState] = useState<AppState>(loadState);
@@ -12,10 +21,14 @@ function App() {
   const [isDragging, setIsDragging] = useState(false);
   const [dragCorner, setDragCorner] = useState<CornerKey | null>(null);
   const [isDragOver, setIsDragOver] = useState(false);
+  const [dragStartPos, setDragStartPos] = useState<Point | null>(null);
+  const [dragStartCorners, setDragStartCorners] = useState<GridCorners | null>(null);
+  const [imageOffset, setImageOffset] = useState<Point>({ x: 0, y: 0 });
   
   const containerRef = useRef<HTMLDivElement>(null);
   const previewCanvasRef = useRef<HTMLCanvasElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const sourceImageRef = useRef<HTMLImageElement>(null);
 
   useEffect(() => {
     saveState(state);
@@ -53,70 +66,134 @@ function App() {
       skewedCorners,
       state.outputWidth,
       state.outputHeight,
-      state.colorMethod
+      state.colorMethod,
+      {
+        enableColorLimit: state.enableColorLimit,
+        maxColors: state.maxColors,
+        enableBackgroundDetection: state.enableBackgroundDetection
+      }
     );
 
     ctx.putImageData(pixelData, 0, 0);
-  }, [imageElement, state.gridCorners, state.outputWidth, state.outputHeight, state.colorMethod, state.perspectiveSkewX, state.perspectiveSkewY, state.isometric]);
+  }, [imageElement, state.gridCorners, state.outputWidth, state.outputHeight, state.colorMethod, state.perspectiveSkewX, state.perspectiveSkewY, state.isometric, state.enableColorLimit, state.maxColors, state.enableBackgroundDetection]);
+
+  // Calculate image offset within container (for proper alignment)
+  const updateImageOffset = useCallback(() => {
+    if (!sourceImageRef.current || !containerRef.current) return;
+    
+    const imgEl = sourceImageRef.current;
+    const container = containerRef.current;
+    const containerRect = container.getBoundingClientRect();
+    const imgRect = imgEl.getBoundingClientRect();
+    
+    setImageOffset({
+      x: imgRect.left - containerRect.left,
+      y: imgRect.top - containerRect.top
+    });
+  }, []);
+
+  // Update offset when image loads or window resizes
+  useEffect(() => {
+    if (imageElement) {
+      // Small delay to allow layout to settle
+      const timer = setTimeout(updateImageOffset, 50);
+      window.addEventListener("resize", updateImageOffset);
+      return () => {
+        clearTimeout(timer);
+        window.removeEventListener("resize", updateImageOffset);
+      };
+    }
+    return undefined;
+  }, [imageElement, updateImageOffset]);
 
   const scaleCorners = useCallback((corners: GridCorners, img: HTMLImageElement): GridCorners => {
     const container = containerRef.current;
+    const imgEl = sourceImageRef.current;
     if (!container || !img) return corners;
 
-    const rect = container.getBoundingClientRect();
-    const displayedWidth = Math.min(rect.width, img.naturalWidth);
-    const displayedHeight = Math.min(rect.height, img.naturalHeight);
+    // Get the actual displayed dimensions of the image
+    let actualWidth: number;
+    let actualHeight: number;
     
-    const aspectRatio = img.naturalWidth / img.naturalHeight;
-    let actualWidth = displayedWidth;
-    let actualHeight = displayedWidth / aspectRatio;
-    
-    if (actualHeight > displayedHeight) {
-      actualHeight = displayedHeight;
-      actualWidth = displayedHeight * aspectRatio;
+    if (imgEl) {
+      actualWidth = imgEl.clientWidth;
+      actualHeight = imgEl.clientHeight;
+    } else {
+      const rect = container.getBoundingClientRect();
+      const displayedWidth = Math.min(rect.width, img.naturalWidth);
+      const displayedHeight = Math.min(rect.height, img.naturalHeight);
+      
+      const aspectRatio = img.naturalWidth / img.naturalHeight;
+      actualWidth = displayedWidth;
+      actualHeight = displayedWidth / aspectRatio;
+      
+      if (actualHeight > displayedHeight) {
+        actualHeight = displayedHeight;
+        actualWidth = displayedHeight * aspectRatio;
+      }
     }
 
     const scaleX = img.naturalWidth / actualWidth;
     const scaleY = img.naturalHeight / actualHeight;
 
+    // Adjust corners for image offset within container
     return {
-      topLeft: { x: corners.topLeft.x * scaleX, y: corners.topLeft.y * scaleY },
-      topRight: { x: corners.topRight.x * scaleX, y: corners.topRight.y * scaleY },
-      bottomLeft: { x: corners.bottomLeft.x * scaleX, y: corners.bottomLeft.y * scaleY },
-      bottomRight: { x: corners.bottomRight.x * scaleX, y: corners.bottomRight.y * scaleY }
+      topLeft: { x: (corners.topLeft.x - imageOffset.x) * scaleX, y: (corners.topLeft.y - imageOffset.y) * scaleY },
+      topRight: { x: (corners.topRight.x - imageOffset.x) * scaleX, y: (corners.topRight.y - imageOffset.y) * scaleY },
+      bottomLeft: { x: (corners.bottomLeft.x - imageOffset.x) * scaleX, y: (corners.bottomLeft.y - imageOffset.y) * scaleY },
+      bottomRight: { x: (corners.bottomRight.x - imageOffset.x) * scaleX, y: (corners.bottomRight.y - imageOffset.y) * scaleY }
     };
-  }, []);
+  }, [imageOffset]);
 
   const handleImageLoad = useCallback((dataUrl: string) => {
     const img = new Image();
     img.onload = () => {
-      const padding = 50;
       const container = containerRef.current;
-      let width = 400;
-      let height = 400;
       
       if (container) {
         const rect = container.getBoundingClientRect();
         const aspectRatio = img.naturalWidth / img.naturalHeight;
-        width = Math.min(rect.width - padding * 2, 600);
-        height = width / aspectRatio;
         
-        if (height > rect.height - padding * 2) {
-          height = Math.min(rect.height - padding * 2, 600);
-          width = height * aspectRatio;
+        // Calculate image dimensions (same logic as CSS max-width/max-height 100%)
+        let displayWidth = rect.width;
+        let displayHeight = rect.width / aspectRatio;
+        
+        if (displayHeight > rect.height) {
+          displayHeight = rect.height;
+          displayWidth = rect.height * aspectRatio;
         }
+        
+        // Calculate offset (image centered in container)
+        const offsetX = (rect.width - displayWidth) / 2;
+        const offsetY = (rect.height - displayHeight) / 2;
+        
+        // Set grid corners with a small padding from the image edges
+        const padding = 20;
+        setState((prev) => ({
+          ...prev,
+          sourceImage: dataUrl,
+          gridCorners: {
+            topLeft: { x: offsetX + padding, y: offsetY + padding },
+            topRight: { x: offsetX + displayWidth - padding, y: offsetY + padding },
+            bottomLeft: { x: offsetX + padding, y: offsetY + displayHeight - padding },
+            bottomRight: { x: offsetX + displayWidth - padding, y: offsetY + displayHeight - padding }
+          }
+        }));
+      } else {
+        const padding = 50;
+        const width = 400;
+        const height = 400;
+        setState((prev) => ({
+          ...prev,
+          sourceImage: dataUrl,
+          gridCorners: {
+            topLeft: { x: padding, y: padding },
+            topRight: { x: width + padding, y: padding },
+            bottomLeft: { x: padding, y: height + padding },
+            bottomRight: { x: width + padding, y: height + padding }
+          }
+        }));
       }
-
-      setState((prev) => ({
-        ...prev,
-        sourceImage: dataUrl,
-        gridCorners: {
-          topLeft: { x: padding, y: padding },
-          topRight: { x: width + padding, y: padding },
-          bottomLeft: { x: padding, y: height + padding },
-          bottomRight: { x: width + padding, y: height + padding }
-        }
-      }));
     };
     img.src = dataUrl;
   }, []);
@@ -192,6 +269,15 @@ function App() {
     e.stopPropagation();
     setIsDragging(true);
     setDragCorner(corner);
+    
+    if (containerRef.current) {
+      const rect = containerRef.current.getBoundingClientRect();
+      setDragStartPos({ x: e.clientX - rect.left, y: e.clientY - rect.top });
+      setState((prev) => {
+        setDragStartCorners(prev.gridCorners);
+        return prev;
+      });
+    }
   }, []);
 
   const handleMouseMove = useCallback((e: MouseEvent) => {
@@ -201,18 +287,58 @@ function App() {
     const x = e.clientX - rect.left;
     const y = e.clientY - rect.top;
 
-    setState((prev) => ({
-      ...prev,
-      gridCorners: {
-        ...prev.gridCorners,
-        [dragCorner]: { x, y }
+    setState((prev) => {
+      if (prev.selectionMode === "corners") {
+        // Direct corner manipulation
+        return {
+          ...prev,
+          gridCorners: {
+            ...prev.gridCorners,
+            [dragCorner]: { x, y }
+          }
+        };
+      } else {
+        // Transform mode: rotate and scale uniformly
+        if (!dragStartPos || !dragStartCorners) return prev;
+        
+        const center = getCornersCenter(dragStartCorners);
+        
+        // Calculate angle change from start to current position
+        const startAngle = Math.atan2(dragStartPos.y - center.y, dragStartPos.x - center.x);
+        const currentAngle = Math.atan2(y - center.y, x - center.x);
+        const angleDelta = (currentAngle - startAngle) * 180 / Math.PI;
+        
+        // Calculate scale change
+        const startDist = Math.sqrt(
+          Math.pow(dragStartPos.x - center.x, 2) + Math.pow(dragStartPos.y - center.y, 2)
+        );
+        const currentDist = Math.sqrt(
+          Math.pow(x - center.x, 2) + Math.pow(y - center.y, 2)
+        );
+        const scaleFactor = startDist > 0 ? currentDist / startDist : 1;
+        
+        // Apply rotation and scale to all corners
+        const newCorners: GridCorners = {
+          topLeft: transformCorner(dragStartCorners.topLeft, center, angleDelta, scaleFactor),
+          topRight: transformCorner(dragStartCorners.topRight, center, angleDelta, scaleFactor),
+          bottomLeft: transformCorner(dragStartCorners.bottomLeft, center, angleDelta, scaleFactor),
+          bottomRight: transformCorner(dragStartCorners.bottomRight, center, angleDelta, scaleFactor)
+        };
+        
+        return {
+          ...prev,
+          rotation: prev.rotation + angleDelta,
+          gridCorners: newCorners
+        };
       }
-    }));
-  }, [isDragging, dragCorner]);
+    });
+  }, [isDragging, dragCorner, dragStartPos, dragStartCorners]);
 
   const handleMouseUp = useCallback(() => {
     setIsDragging(false);
     setDragCorner(null);
+    setDragStartPos(null);
+    setDragStartCorners(null);
   }, []);
 
   useEffect(() => {
@@ -285,23 +411,31 @@ function App() {
     if (!imageElement || !containerRef.current) return;
 
     const rect = containerRef.current.getBoundingClientRect();
-    const padding = 50;
     const aspectRatio = imageElement.naturalWidth / imageElement.naturalHeight;
-    let width = Math.min(rect.width - padding * 2, 600);
-    let height = width / aspectRatio;
-
-    if (height > rect.height - padding * 2) {
-      height = Math.min(rect.height - padding * 2, 600);
-      width = height * aspectRatio;
+    
+    // Calculate image dimensions (same logic as CSS max-width/max-height 100%)
+    let displayWidth = rect.width;
+    let displayHeight = rect.width / aspectRatio;
+    
+    if (displayHeight > rect.height) {
+      displayHeight = rect.height;
+      displayWidth = rect.height * aspectRatio;
     }
+    
+    // Calculate offset (image centered in container)
+    const offsetX = (rect.width - displayWidth) / 2;
+    const offsetY = (rect.height - displayHeight) / 2;
+    
+    // Set grid corners with a small padding from the image edges
+    const padding = 20;
 
     setState((prev) => ({
       ...prev,
       gridCorners: {
-        topLeft: { x: padding, y: padding },
-        topRight: { x: width + padding, y: padding },
-        bottomLeft: { x: padding, y: height + padding },
-        bottomRight: { x: width + padding, y: height + padding }
+        topLeft: { x: offsetX + padding, y: offsetY + padding },
+        topRight: { x: offsetX + displayWidth - padding, y: offsetY + padding },
+        bottomLeft: { x: offsetX + padding, y: offsetY + displayHeight - padding },
+        bottomRight: { x: offsetX + displayWidth - padding, y: offsetY + displayHeight - padding }
       },
       rotation: 0
     }));
@@ -351,9 +485,11 @@ function App() {
             ) : (
               <>
                 <img
+                  ref={sourceImageRef}
                   src={state.sourceImage}
                   alt="Source"
                   class="source-image"
+                  onLoad={updateImageOffset}
                 />
                 <div class="grid-overlay">
                   <svg>
@@ -396,10 +532,7 @@ function App() {
           <div class="preview-canvas">
             <canvas
               ref={previewCanvasRef}
-              style={{
-                width: `${Math.min(state.outputWidth * 4, 256)}px`,
-                height: `${Math.min(state.outputHeight * 4, 256)}px`
-              }}
+              class="preview-canvas-element"
             />
             
             {state.sourceImage && (
@@ -554,6 +687,87 @@ function App() {
                 Reset Perspective
               </button>
             </div>
+          </div>
+
+          <div class="settings-group">
+            <label>Selection Mode</label>
+            <div class="selection-mode-buttons">
+              <button
+                class={`mode-btn ${state.selectionMode === "transform" ? "active" : ""}`}
+                onClick={() => setState((prev) => ({ ...prev, selectionMode: "transform" }))}
+              >
+                🔄 Transform
+              </button>
+              <button
+                class={`mode-btn ${state.selectionMode === "corners" ? "active" : ""}`}
+                onClick={() => setState((prev) => ({ ...prev, selectionMode: "corners" }))}
+              >
+                📐 Corners
+              </button>
+            </div>
+            <p style={{ fontSize: "0.75rem", color: "#888", marginTop: "0.5rem" }}>
+              {state.selectionMode === "transform" 
+                ? "Drag to rotate/scale the selection uniformly"
+                : "Drag individual corners to adjust perspective"
+              }
+            </p>
+          </div>
+
+          <div class="settings-group">
+            <label>Color Quantization</label>
+            <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", marginBottom: "0.5rem" }}>
+              <input
+                type="checkbox"
+                id="enableColorLimit"
+                checked={state.enableColorLimit}
+                onChange={(e) => {
+                  const checked = (e.target as HTMLInputElement).checked;
+                  setState((prev) => ({ ...prev, enableColorLimit: checked }));
+                }}
+              />
+              <label htmlFor="enableColorLimit" style={{ fontSize: "0.75rem", color: "#888" }}>
+                Limit output colors
+              </label>
+            </div>
+            {state.enableColorLimit && (
+              <div>
+                <label>Max Colors: {state.maxColors}</label>
+                <input
+                  type="range"
+                  min="2"
+                  max="256"
+                  value={state.maxColors}
+                  onChange={(e) => {
+                    const value = parseInt((e.target as HTMLInputElement).value, 10);
+                    setState((prev) => ({ ...prev, maxColors: value }));
+                  }}
+                />
+              </div>
+            )}
+            <p style={{ fontSize: "0.75rem", color: "#888", marginTop: "0.5rem" }}>
+              Uses k-means clustering in ICtCp color space
+            </p>
+          </div>
+
+          <div class="settings-group">
+            <label>Background Detection</label>
+            <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
+              <input
+                type="checkbox"
+                id="enableBackgroundDetection"
+                checked={state.enableBackgroundDetection}
+                onChange={(e) => {
+                  const checked = (e.target as HTMLInputElement).checked;
+                  setState((prev) => ({ ...prev, enableBackgroundDetection: checked }));
+                }}
+              />
+              <label htmlFor="enableBackgroundDetection" style={{ fontSize: "0.75rem", color: "#888" }}>
+                Auto-remove uniform background
+              </label>
+            </div>
+            <p style={{ fontSize: "0.75rem", color: "#888", marginTop: "0.5rem" }}>
+              Detects and removes solid background fields
+            </p>
           </div>
         </aside>
       </main>
