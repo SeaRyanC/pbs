@@ -96,6 +96,7 @@ function App() {
   const [dragStartPos, setDragStartPos] = useState<Point | null>(null);
   const [dragStartCorners, setDragStartCorners] = useState<GridCorners | null>(null);
   const [dragStartRotation, setDragStartRotation] = useState<number>(0);
+  const [isDraggingCenter, setIsDraggingCenter] = useState(false);
   const [imageOffset, setImageOffset] = useState<Point>({ x: 0, y: 0 });
   const [isInferring, setIsInferring] = useState(false);
   const [inferProgress, setInferProgress] = useState<InferDimensionsProgress | null>(null);
@@ -355,15 +356,49 @@ function App() {
     }
   }, [state.gridCorners, state.rotation]);
 
+  const handleCenterMouseDown = useCallback((e: MouseEvent) => {
+    if (state.selectionMode !== "transform") return;
+    
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(true);
+    setIsDraggingCenter(true);
+    
+    if (containerRef.current) {
+      const rect = containerRef.current.getBoundingClientRect();
+      setDragStartPos({ x: e.clientX - rect.left, y: e.clientY - rect.top });
+      setDragStartCorners(state.gridCorners);
+    }
+  }, [state.gridCorners, state.selectionMode]);
+
   const handleMouseMove = useCallback((e: MouseEvent) => {
-    if (!isDragging || !dragCorner || !containerRef.current) return;
+    if (!isDragging || !containerRef.current) return;
+    if (!isDraggingCenter && !dragCorner) return;
 
     const rect = containerRef.current.getBoundingClientRect();
     const x = e.clientX - rect.left;
     const y = e.clientY - rect.top;
 
     setState((prev) => {
-      if (prev.selectionMode === "corners") {
+      if (isDraggingCenter) {
+        // Center dragging: translate the entire grid
+        if (!dragStartPos || !dragStartCorners) return prev;
+        
+        const deltaX = x - dragStartPos.x;
+        const deltaY = y - dragStartPos.y;
+        
+        const newCorners: GridCorners = {
+          topLeft: { x: dragStartCorners.topLeft.x + deltaX, y: dragStartCorners.topLeft.y + deltaY },
+          topRight: { x: dragStartCorners.topRight.x + deltaX, y: dragStartCorners.topRight.y + deltaY },
+          bottomLeft: { x: dragStartCorners.bottomLeft.x + deltaX, y: dragStartCorners.bottomLeft.y + deltaY },
+          bottomRight: { x: dragStartCorners.bottomRight.x + deltaX, y: dragStartCorners.bottomRight.y + deltaY }
+        };
+        
+        return {
+          ...prev,
+          gridCorners: newCorners
+        };
+      } else if (prev.selectionMode === "corners" && dragCorner) {
         // Direct corner manipulation
         return {
           ...prev,
@@ -372,7 +407,7 @@ function App() {
             [dragCorner]: { x, y }
           }
         };
-      } else {
+      } else if (dragCorner) {
         // Transform mode: rotate and scale uniformly
         if (!dragStartPos || !dragStartCorners) return prev;
         
@@ -406,8 +441,9 @@ function App() {
           gridCorners: newCorners
         };
       }
+      return prev;
     });
-  }, [isDragging, dragCorner, dragStartPos, dragStartCorners, dragStartRotation]);
+  }, [isDragging, isDraggingCenter, dragCorner, dragStartPos, dragStartCorners, dragStartRotation]);
 
   const handleMouseUp = useCallback(() => {
     setIsDragging(false);
@@ -415,6 +451,7 @@ function App() {
     setDragStartPos(null);
     setDragStartCorners(null);
     setDragStartRotation(0);
+    setIsDraggingCenter(false);
   }, []);
 
   useEffect(() => {
@@ -643,8 +680,9 @@ function App() {
                 <div class="grid-overlay">
                   <svg>
                     <polygon
-                      class="grid-fill"
+                      class={`grid-fill ${state.selectionMode === "transform" ? "draggable" : ""}`}
                       points={`${corners.topLeft.x},${corners.topLeft.y} ${corners.topRight.x},${corners.topRight.y} ${corners.bottomRight.x},${corners.bottomRight.y} ${corners.bottomLeft.x},${corners.bottomLeft.y}`}
+                      onMouseDown={handleCenterMouseDown}
                     />
                     
                     {state.showPixelGrid && (

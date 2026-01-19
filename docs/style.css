@@ -161,6 +161,10 @@ body {
   stroke-width: 2;
 }
 
+.grid-fill.draggable {
+  cursor: move;
+}
+
 .pixel-grid-lines {
   fill: none;
   stroke: #ffffff;
