@@ -981,9 +981,10 @@ function detectAndRemoveBackground(output, imageData, corners, outputWidth, outp
   const intensity = bgIctcp.i;
   const chroma = Math.sqrt(bgIctcp.ct * bgIctcp.ct + bgIctcp.cp * bgIctcp.cp);
   const baseThreshold = 0.02;
-  const intensityFactor = 1 + intensity * 2;
-  const chromaFactor = 1 + chroma * 2;
-  const colorThreshold = baseThreshold * intensityFactor * chromaFactor;
+  const intensityFactor = 1 + Math.min(intensity * 2, 2);
+  const chromaFactor = 1 + Math.min(chroma * 2, 4);
+  const adaptiveThreshold = baseThreshold * intensityFactor * chromaFactor;
+  const colorThreshold = Math.min(adaptiveThreshold, 0.3);
   const isBackground = new Array(outputWidth * outputHeight).fill(false);
   const visited = new Array(outputWidth * outputHeight).fill(false);
   const isColorSimilar = (idx) => {

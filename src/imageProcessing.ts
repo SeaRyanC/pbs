@@ -718,15 +718,24 @@ function detectAndRemoveBackground(
   if (!backgroundColor || maxCount < borderColors.length * 0.5) return;
   
   const bgIctcp = rgbToIctcp(backgroundColor);
-  // Use adaptive threshold based on color intensity
+  // Use adaptive threshold based on color intensity and chroma (saturation)
   // Bright saturated colors like magenta need a higher threshold in ICtCp space
+  // because they have larger perceptual distances even for similar shades.
+  //
+  // ICtCp value ranges:
+  // - intensity (i): typically 0-1, represents lightness
+  // - chroma: typically 0-0.5 for normal colors, can exceed 1 for highly saturated colors
   const intensity = bgIctcp.i;
   const chroma = Math.sqrt(bgIctcp.ct * bgIctcp.ct + bgIctcp.cp * bgIctcp.cp);
-  // Higher chroma (saturation) and higher intensity require larger thresholds
+  
+  // Calculate adaptive threshold with bounds
   const baseThreshold = 0.02;
-  const intensityFactor = 1 + intensity * 2; // Scale by intensity (0-1 range typical)
-  const chromaFactor = 1 + chroma * 2; // Scale by chroma (saturation)
-  const colorThreshold = baseThreshold * intensityFactor * chromaFactor;
+  const intensityFactor = 1 + Math.min(intensity * 2, 2); // Cap at 3x for very bright colors
+  const chromaFactor = 1 + Math.min(chroma * 2, 4); // Cap at 5x for very saturated colors
+  const adaptiveThreshold = baseThreshold * intensityFactor * chromaFactor;
+  
+  // Apply maximum threshold to prevent algorithm from being too permissive
+  const colorThreshold = Math.min(adaptiveThreshold, 0.3);
   
   // Track which pixels are part of a "connected" background region
   // Use flood fill from edges to mark exterior background
