@@ -985,6 +985,7 @@ function detectAndRemoveBackground(output, imageData, corners, outputWidth, outp
   const chromaFactor = 1 + Math.min(chroma * 2, 4);
   const adaptiveThreshold = baseThreshold * intensityFactor * chromaFactor;
   const colorThreshold = Math.min(adaptiveThreshold, 0.3);
+  const colorThresholdSquared = colorThreshold * colorThreshold;
   const isBackground = new Array(outputWidth * outputHeight).fill(false);
   const visited = new Array(outputWidth * outputHeight).fill(false);
   const isColorSimilar = (idx) => {
@@ -996,7 +997,7 @@ function detectAndRemoveBackground(output, imageData, corners, outputWidth, outp
     };
     if (pixel.a === 0) return true;
     const pixelIctcp = rgbToIctcp(pixel);
-    return ictcpDistanceSquared(pixelIctcp, bgIctcp) < colorThreshold;
+    return ictcpDistanceSquared(pixelIctcp, bgIctcp) < colorThresholdSquared;
   };
   const queue = [];
   for (let x2 = 0; x2 < outputWidth; x2++) {

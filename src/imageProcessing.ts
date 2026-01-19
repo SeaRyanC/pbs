@@ -730,12 +730,13 @@ function detectAndRemoveBackground(
   
   // Calculate adaptive threshold with bounds
   const baseThreshold = 0.02;
-  const intensityFactor = 1 + Math.min(intensity * 2, 2); // Cap at 3x for very bright colors
-  const chromaFactor = 1 + Math.min(chroma * 2, 4); // Cap at 5x for very saturated colors
+  const intensityFactor = 1 + Math.min(intensity * 2, 2); // Max intensity * 2 = 2, resulting in max 3x multiplier
+  const chromaFactor = 1 + Math.min(chroma * 2, 4); // Max chroma * 2 = 4, resulting in max 5x multiplier
   const adaptiveThreshold = baseThreshold * intensityFactor * chromaFactor;
   
   // Apply maximum threshold to prevent algorithm from being too permissive
   const colorThreshold = Math.min(adaptiveThreshold, 0.3);
+  const colorThresholdSquared = colorThreshold * colorThreshold; // Pre-square for comparison with squared distance
   
   // Track which pixels are part of a "connected" background region
   // Use flood fill from edges to mark exterior background
@@ -753,7 +754,7 @@ function detectAndRemoveBackground(
     if (pixel.a === 0) return true; // Transparent is "background"
     
     const pixelIctcp = rgbToIctcp(pixel);
-    return ictcpDistanceSquared(pixelIctcp, bgIctcp) < colorThreshold;
+    return ictcpDistanceSquared(pixelIctcp, bgIctcp) < colorThresholdSquared;
   };
   
   // BFS flood fill from all edge pixels
