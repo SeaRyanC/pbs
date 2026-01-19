@@ -465,6 +465,7 @@ function App() {
         skewedCorners,
         state.outputWidth,
         state.outputHeight,
+        state.colorMethod,
         (progress) => setInferProgress(progress)
       );
       
@@ -480,7 +481,7 @@ function App() {
       setIsInferring(false);
       setInferProgress(null);
     }
-  }, [imageElement, state.gridCorners, state.outputWidth, state.outputHeight, state.perspectiveSkewX, state.perspectiveSkewY, state.isometric, scaleCorners]);
+  }, [imageElement, state.gridCorners, state.outputWidth, state.outputHeight, state.colorMethod, state.perspectiveSkewX, state.perspectiveSkewY, state.isometric, scaleCorners]);
 
   const corners = state.gridCorners;
 

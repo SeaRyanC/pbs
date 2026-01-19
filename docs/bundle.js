@@ -425,6 +425,11 @@ var COLOR_METHODS = [
     id: "centerWeighted",
     name: "Center Weighted",
     description: "Center pixel weighted more heavily"
+  },
+  {
+    id: "centerSpot",
+    name: "Center Spot",
+    description: "Only measures color in the middle 20% of the cell"
   }
 ];
 var DEFAULT_STATE = {
@@ -642,6 +647,29 @@ function centerWeightedColor(pixels) {
     a: Math.round(a3 / weight)
   };
 }
+function centerSpotColor(pixels) {
+  if (pixels.length === 0) return { r: 0, g: 0, b: 0, a: 0 };
+  const size = Math.sqrt(pixels.length);
+  if (size < 1) return meanColor(pixels);
+  const centerRatio = 0.2;
+  const margin = (1 - centerRatio) / 2;
+  const startIdx = Math.floor(margin * size);
+  const endIdx = Math.ceil((1 - margin) * size);
+  const actualStart = Math.min(startIdx, Math.floor(size / 2));
+  const actualEnd = Math.max(endIdx, Math.ceil(size / 2) + 1);
+  const centerPixels = [];
+  for (let row = actualStart; row < actualEnd && row < size; row++) {
+    for (let col = actualStart; col < actualEnd && col < size; col++) {
+      const idx = row * size + col;
+      const pixel = pixels[idx];
+      if (pixel) {
+        centerPixels.push(pixel);
+      }
+    }
+  }
+  if (centerPixels.length === 0) return meanColor(pixels);
+  return meanColor(centerPixels);
+}
 function computeCellColor(pixels, method) {
   switch (method) {
     case "mean":
@@ -654,6 +682,8 @@ function computeCellColor(pixels, method) {
       return kernelMedianColor(pixels);
     case "centerWeighted":
       return centerWeightedColor(pixels);
+    case "centerSpot":
+      return centerSpotColor(pixels);
     default:
       return meanColor(pixels);
   }
@@ -1085,13 +1115,39 @@ function applyPerspectiveSkew(corners, skewX, skewY, isometric) {
     }
   };
 }
-function calculateCellVariance(imageData, startX, startY, cellWidth, cellHeight) {
+function collectCellPixelsForVariance(imageData, startX, startY, cellWidth, cellHeight, colorMethod) {
   const pixels = [];
   const endX = Math.min(startX + cellWidth, imageData.width);
   const endY = Math.min(startY + cellHeight, imageData.height);
-  for (let y3 = startY; y3 < endY; y3++) {
-    for (let x2 = startX; x2 < endX; x2++) {
-      const idx = (Math.floor(y3) * imageData.width + Math.floor(x2)) * 4;
+  if (colorMethod === "centerSpot") {
+    const centerRatio = 0.2;
+    const marginX = cellWidth * (1 - centerRatio) / 2;
+    const marginY = cellHeight * (1 - centerRatio) / 2;
+    const centerStartX = startX + marginX;
+    const centerEndX = startX + cellWidth - marginX;
+    const centerStartY = startY + marginY;
+    const centerEndY = startY + cellHeight - marginY;
+    const actualStartX = Math.max(startX, Math.floor(centerStartX));
+    const actualEndX = Math.min(endX, Math.ceil(centerEndX));
+    const actualStartY = Math.max(startY, Math.floor(centerStartY));
+    const actualEndY = Math.min(endY, Math.ceil(centerEndY));
+    for (let y3 = actualStartY; y3 < actualEndY; y3++) {
+      for (let x2 = actualStartX; x2 < actualEndX; x2++) {
+        const idx = (Math.floor(y3) * imageData.width + Math.floor(x2)) * 4;
+        if (idx >= 0 && idx + 3 < imageData.data.length) {
+          pixels.push({
+            r: imageData.data[idx] ?? 0,
+            g: imageData.data[idx + 1] ?? 0,
+            b: imageData.data[idx + 2] ?? 0,
+            a: imageData.data[idx + 3] ?? 255
+          });
+        }
+      }
+    }
+    if (pixels.length === 0) {
+      const centerX = Math.floor(startX + cellWidth / 2);
+      const centerY = Math.floor(startY + cellHeight / 2);
+      const idx = (centerY * imageData.width + centerX) * 4;
       if (idx >= 0 && idx + 3 < imageData.data.length) {
         pixels.push({
           r: imageData.data[idx] ?? 0,
@@ -1101,7 +1157,32 @@ function calculateCellVariance(imageData, startX, startY, cellWidth, cellHeight)
         });
       }
     }
+  } else {
+    for (let y3 = startY; y3 < endY; y3++) {
+      for (let x2 = startX; x2 < endX; x2++) {
+        const idx = (Math.floor(y3) * imageData.width + Math.floor(x2)) * 4;
+        if (idx >= 0 && idx + 3 < imageData.data.length) {
+          pixels.push({
+            r: imageData.data[idx] ?? 0,
+            g: imageData.data[idx + 1] ?? 0,
+            b: imageData.data[idx + 2] ?? 0,
+            a: imageData.data[idx + 3] ?? 255
+          });
+        }
+      }
+    }
   }
+  return pixels;
+}
+function calculateCellVarianceWithMethod(imageData, startX, startY, cellWidth, cellHeight, colorMethod) {
+  const pixels = collectCellPixelsForVariance(
+    imageData,
+    startX,
+    startY,
+    cellWidth,
+    cellHeight,
+    colorMethod
+  );
   if (pixels.length < 2) return 0;
   let sumR = 0, sumG = 0, sumB = 0;
   for (const p3 of pixels) {
@@ -1119,36 +1200,42 @@ function calculateCellVariance(imageData, startX, startY, cellWidth, cellHeight)
   }
   return variance / n2;
 }
-function calculateGridScore(imageData, gridWidth, gridHeight, offsetX, offsetY, sampleRatio = 0.2) {
-  const cellWidth = imageData.width / gridWidth;
-  const cellHeight = imageData.height / gridHeight;
+function calculatePitchScore(imageData, pitch, offsetX, offsetY, colorMethod, sampleRatio = 0.3) {
+  const gridWidth = Math.floor((imageData.width - offsetX) / pitch);
+  const gridHeight = Math.floor((imageData.height - offsetY) / pitch);
+  if (gridWidth < 2 || gridHeight < 2) return Infinity;
   const totalCells = gridWidth * gridHeight;
-  const sampleCount = Math.max(10, Math.floor(totalCells * sampleRatio));
+  const sampleCount = Math.max(20, Math.floor(totalCells * sampleRatio));
   const step = Math.max(1, Math.floor(totalCells / sampleCount));
   let totalVariance = 0;
   let cellCount = 0;
   for (let i4 = 0; i4 < totalCells; i4 += step) {
     const cellX = i4 % gridWidth;
     const cellY = Math.floor(i4 / gridWidth);
-    const startX = offsetX + cellX * cellWidth;
-    const startY = offsetY + cellY * cellHeight;
-    if (startX < 0 || startY < 0 || startX >= imageData.width || startY >= imageData.height) {
+    const startX = offsetX + cellX * pitch;
+    const startY = offsetY + cellY * pitch;
+    if (startX < 0 || startY < 0 || startX + pitch > imageData.width || startY + pitch > imageData.height) {
       continue;
     }
-    totalVariance += calculateCellVariance(imageData, startX, startY, cellWidth, cellHeight);
+    totalVariance += calculateCellVarianceWithMethod(
+      imageData,
+      startX,
+      startY,
+      pitch,
+      pitch,
+      colorMethod
+    );
     cellCount++;
   }
   return cellCount > 0 ? totalVariance / cellCount : Infinity;
 }
-function findOptimalOffset(imageData, gridWidth, gridHeight, offsetSteps = 8) {
-  const cellWidth = imageData.width / gridWidth;
-  const cellHeight = imageData.height / gridHeight;
+function findOptimalOffsetForPitch(imageData, pitch, colorMethod, offsetSteps = 8) {
   let bestOffset = { offsetX: 0, offsetY: 0, score: Infinity };
   for (let ox = 0; ox < offsetSteps; ox++) {
     for (let oy = 0; oy < offsetSteps; oy++) {
-      const offsetX = ox / offsetSteps * cellWidth;
-      const offsetY = oy / offsetSteps * cellHeight;
-      const score = calculateGridScore(imageData, gridWidth, gridHeight, offsetX, offsetY, 0.15);
+      const offsetX = ox / offsetSteps * pitch;
+      const offsetY = oy / offsetSteps * pitch;
+      const score = calculatePitchScore(imageData, pitch, offsetX, offsetY, colorMethod, 0.2);
       if (score < bestOffset.score) {
         bestOffset = { offsetX, offsetY, score };
       }
@@ -1156,54 +1243,7 @@ function findOptimalOffset(imageData, gridWidth, gridHeight, offsetSteps = 8) {
   }
   return bestOffset;
 }
-function detectPixelPitch(imageData) {
-  const width = imageData.width;
-  const height = imageData.height;
-  const hEdges = new Array(width).fill(0);
-  for (let y3 = 0; y3 < height; y3++) {
-    for (let x2 = 1; x2 < width; x2++) {
-      const idx1 = (y3 * width + x2 - 1) * 4;
-      const idx2 = (y3 * width + x2) * 4;
-      if (idx2 + 2 >= imageData.data.length) continue;
-      const diff = Math.abs((imageData.data[idx1] ?? 0) - (imageData.data[idx2] ?? 0)) + Math.abs((imageData.data[idx1 + 1] ?? 0) - (imageData.data[idx2 + 1] ?? 0)) + Math.abs((imageData.data[idx1 + 2] ?? 0) - (imageData.data[idx2 + 2] ?? 0));
-      hEdges[x2] = (hEdges[x2] ?? 0) + diff;
-    }
-  }
-  const vEdges = new Array(height).fill(0);
-  for (let y3 = 1; y3 < height; y3++) {
-    for (let x2 = 0; x2 < width; x2++) {
-      const idx1 = ((y3 - 1) * width + x2) * 4;
-      const idx2 = (y3 * width + x2) * 4;
-      if (idx2 + 2 >= imageData.data.length) continue;
-      const diff = Math.abs((imageData.data[idx1] ?? 0) - (imageData.data[idx2] ?? 0)) + Math.abs((imageData.data[idx1 + 1] ?? 0) - (imageData.data[idx2 + 1] ?? 0)) + Math.abs((imageData.data[idx1 + 2] ?? 0) - (imageData.data[idx2 + 2] ?? 0));
-      vEdges[y3] = (vEdges[y3] ?? 0) + diff;
-    }
-  }
-  const findPeriod = (edges, maxPeriod) => {
-    let bestPeriod = 1;
-    let bestScore = 0;
-    for (let period = 4; period <= maxPeriod; period++) {
-      let correlation = 0;
-      let count = 0;
-      for (let i4 = period; i4 < edges.length; i4++) {
-        correlation += (edges[i4] ?? 0) * (edges[i4 - period] ?? 0);
-        count++;
-      }
-      if (count > 0) {
-        const score = correlation / count;
-        if (score > bestScore) {
-          bestScore = score;
-          bestPeriod = period;
-        }
-      }
-    }
-    return bestPeriod;
-  };
-  const pitchX = findPeriod(hEdges, Math.min(100, Math.floor(width / 4)));
-  const pitchY = findPeriod(vEdges, Math.min(100, Math.floor(height / 4)));
-  return { pitchX, pitchY };
-}
-async function inferDimensions(sourceImage, corners, currentWidth, currentHeight, onProgress) {
+async function inferDimensions(sourceImage, corners, currentWidth, currentHeight, colorMethod, onProgress) {
   const tempCanvas = document.createElement("canvas");
   const minX = Math.min(corners.topLeft.x, corners.bottomLeft.x);
   const maxX = Math.max(corners.topRight.x, corners.bottomRight.x);
@@ -1232,103 +1272,119 @@ async function inferDimensions(sourceImage, corners, currentWidth, currentHeight
   );
   onProgress?.({ progress: 5, phase: "Analyzing image structure..." });
   await new Promise((resolve) => setTimeout(resolve, 0));
-  const { pitchX, pitchY } = detectPixelPitch(imageData);
-  const estimatedWidth = Math.round(imageData.width / pitchX);
-  const estimatedHeight = Math.round(imageData.height / pitchY);
+  const currentPitchX = imageData.width / currentWidth;
+  const currentPitchY = imageData.height / currentHeight;
+  const estimatedPitch = (currentPitchX + currentPitchY) / 2;
+  const minPitch = Math.max(2, Math.floor(estimatedPitch * 0.5));
+  const maxPitch = Math.min(
+    Math.min(imageData.width, imageData.height) / 4,
+    Math.ceil(estimatedPitch * 2)
+  );
   onProgress?.({
-    progress: 15,
-    phase: `Initial estimate: ${estimatedWidth}\xD7${estimatedHeight}`,
-    currentBest: { width: estimatedWidth, height: estimatedHeight }
+    progress: 10,
+    phase: `Searching pitch range ${minPitch}-${maxPitch}px`,
+    currentBest: { width: currentWidth, height: currentHeight }
   });
   await new Promise((resolve) => setTimeout(resolve, 0));
-  const searchRanges = {
-    minW: Math.max(4, Math.min(estimatedWidth, currentWidth) - 20),
-    maxW: Math.min(256, Math.max(estimatedWidth, currentWidth) + 20),
-    minH: Math.max(4, Math.min(estimatedHeight, currentHeight) - 20),
-    maxH: Math.min(256, Math.max(estimatedHeight, currentHeight) + 20)
-  };
   let bestResult = {
-    width: currentWidth,
-    height: currentHeight,
+    pitch: estimatedPitch,
     offsetX: 0,
     offsetY: 0,
     score: Infinity
   };
-  const coarseStep = 2;
-  const totalCoarseIterations = Math.ceil((searchRanges.maxW - searchRanges.minW) / coarseStep) * Math.ceil((searchRanges.maxH - searchRanges.minH) / coarseStep);
-  let coarseIteration = 0;
-  for (let w3 = searchRanges.minW; w3 <= searchRanges.maxW; w3 += coarseStep) {
-    for (let h3 = searchRanges.minH; h3 <= searchRanges.maxH; h3 += coarseStep) {
-      coarseIteration++;
-      const score = calculateGridScore(imageData, w3, h3, 0, 0, 0.1);
-      if (score < bestResult.score) {
-        bestResult = { width: w3, height: h3, offsetX: 0, offsetY: 0, score };
-      }
-      if (coarseIteration % 50 === 0) {
-        const progress = 15 + coarseIteration / totalCoarseIterations * 35;
-        onProgress?.({
-          progress,
-          phase: `Coarse search: testing ${w3}\xD7${h3}`,
-          currentBest: { width: bestResult.width, height: bestResult.height }
-        });
-        await new Promise((resolve) => setTimeout(resolve, 0));
-      }
+  const totalCoarseIterations = maxPitch - minPitch + 1;
+  for (let pitch = minPitch; pitch <= maxPitch; pitch++) {
+    const score = calculatePitchScore(imageData, pitch, 0, 0, colorMethod, 0.15);
+    if (score < bestResult.score) {
+      bestResult = { pitch, offsetX: 0, offsetY: 0, score };
+    }
+    const iteration = pitch - minPitch;
+    if (iteration % 5 === 0) {
+      const progress = 10 + iteration / totalCoarseIterations * 40;
+      const currentBestWidth = Math.round(imageData.width / bestResult.pitch);
+      const currentBestHeight = Math.round(imageData.height / bestResult.pitch);
+      onProgress?.({
+        progress,
+        phase: `Coarse search: testing pitch ${pitch}px`,
+        currentBest: { width: currentBestWidth, height: currentBestHeight }
+      });
+      await new Promise((resolve) => setTimeout(resolve, 0));
     }
   }
+  const coarseBestWidth = Math.round(imageData.width / bestResult.pitch);
+  const coarseBestHeight = Math.round(imageData.height / bestResult.pitch);
   onProgress?.({
     progress: 50,
-    phase: `Coarse search complete. Best: ${bestResult.width}\xD7${bestResult.height}`,
-    currentBest: { width: bestResult.width, height: bestResult.height }
+    phase: `Coarse search complete: ${coarseBestWidth}\xD7${coarseBestHeight}`,
+    currentBest: { width: coarseBestWidth, height: coarseBestHeight }
   });
   await new Promise((resolve) => setTimeout(resolve, 0));
-  const fineSearchRange = 5;
-  const fineRanges = {
-    minW: Math.max(4, bestResult.width - fineSearchRange),
-    maxW: Math.min(256, bestResult.width + fineSearchRange),
-    minH: Math.max(4, bestResult.height - fineSearchRange),
-    maxH: Math.min(256, bestResult.height + fineSearchRange)
-  };
-  const totalFineIterations = (fineRanges.maxW - fineRanges.minW + 1) * (fineRanges.maxH - fineRanges.minH + 1);
+  const fineSearchRange = 3;
+  const fineStep = 0.25;
+  const fineMin = Math.max(2, bestResult.pitch - fineSearchRange);
+  const fineMax = bestResult.pitch + fineSearchRange;
+  const totalFineIterations = Math.ceil((fineMax - fineMin) / fineStep);
   let fineIteration = 0;
-  for (let w3 = fineRanges.minW; w3 <= fineRanges.maxW; w3++) {
-    for (let h3 = fineRanges.minH; h3 <= fineRanges.maxH; h3++) {
-      fineIteration++;
-      const { offsetX, offsetY, score } = findOptimalOffset(imageData, w3, h3, 8);
-      if (score < bestResult.score) {
-        bestResult = { width: w3, height: h3, offsetX, offsetY, score };
-      }
-      const progress = 50 + fineIteration / totalFineIterations * 40;
-      if (fineIteration % 10 === 0) {
-        onProgress?.({
-          progress,
-          phase: `Fine search: testing ${w3}\xD7${h3}`,
-          currentBest: { width: bestResult.width, height: bestResult.height }
-        });
-        await new Promise((resolve) => setTimeout(resolve, 0));
-      }
+  for (let pitch = fineMin; pitch <= fineMax; pitch += fineStep) {
+    fineIteration++;
+    const { offsetX, offsetY, score } = findOptimalOffsetForPitch(
+      imageData,
+      pitch,
+      colorMethod,
+      8
+    );
+    if (score < bestResult.score) {
+      bestResult = { pitch, offsetX, offsetY, score };
+    }
+    const progress = 50 + fineIteration / totalFineIterations * 35;
+    if (fineIteration % 8 === 0) {
+      const currentBestWidth = Math.round(imageData.width / bestResult.pitch);
+      const currentBestHeight = Math.round(imageData.height / bestResult.pitch);
+      onProgress?.({
+        progress,
+        phase: `Fine search: pitch ${pitch.toFixed(2)}px`,
+        currentBest: { width: currentBestWidth, height: currentBestHeight }
+      });
+      await new Promise((resolve) => setTimeout(resolve, 0));
     }
   }
+  const finalWidth = Math.round(imageData.width / bestResult.pitch);
+  const finalHeight = Math.round(imageData.height / bestResult.pitch);
   onProgress?.({
-    progress: 92,
-    phase: `Optimizing alignment for ${bestResult.width}\xD7${bestResult.height}`,
-    currentBest: { width: bestResult.width, height: bestResult.height }
+    progress: 88,
+    phase: `Optimizing alignment for ${finalWidth}\xD7${finalHeight}`,
+    currentBest: { width: finalWidth, height: finalHeight }
   });
   await new Promise((resolve) => setTimeout(resolve, 0));
-  const finalOffset = findOptimalOffset(imageData, bestResult.width, bestResult.height, 16);
+  const finalOffset = findOptimalOffsetForPitch(
+    imageData,
+    bestResult.pitch,
+    colorMethod,
+    16
+  );
   bestResult.offsetX = finalOffset.offsetX;
   bestResult.offsetY = finalOffset.offsetY;
   bestResult.score = finalOffset.score;
-  const baselineScore = calculateGridScore(imageData, currentWidth, currentHeight, 0, 0, 0.2);
+  const resultWidth = Math.round(imageData.width / bestResult.pitch);
+  const resultHeight = Math.round(imageData.height / bestResult.pitch);
+  const baselineScore = calculatePitchScore(
+    imageData,
+    estimatedPitch,
+    0,
+    0,
+    colorMethod,
+    0.2
+  );
   const improvement = baselineScore > 0 ? (baselineScore - bestResult.score) / baselineScore : 0;
   const confidence = Math.max(0, Math.min(1, improvement + 0.5));
   onProgress?.({
     progress: 100,
-    phase: `Complete: ${bestResult.width}\xD7${bestResult.height}`,
-    currentBest: { width: bestResult.width, height: bestResult.height }
+    phase: `Complete: ${resultWidth}\xD7${resultHeight}`,
+    currentBest: { width: resultWidth, height: resultHeight }
   });
   return {
-    width: bestResult.width,
-    height: bestResult.height,
+    width: resultWidth,
+    height: resultHeight,
     offsetX: bestResult.offsetX,
     offsetY: bestResult.offsetY,
     confidence
@@ -1719,6 +1775,7 @@ function App() {
         skewedCorners,
         state.outputWidth,
         state.outputHeight,
+        state.colorMethod,
         (progress) => setInferProgress(progress)
       );
       setState((prev) => ({
@@ -1732,7 +1789,7 @@ function App() {
       setIsInferring(false);
       setInferProgress(null);
     }
-  }, [imageElement, state.gridCorners, state.outputWidth, state.outputHeight, state.perspectiveSkewX, state.perspectiveSkewY, state.isometric, scaleCorners]);
+  }, [imageElement, state.gridCorners, state.outputWidth, state.outputHeight, state.colorMethod, state.perspectiveSkewX, state.perspectiveSkewY, state.isometric, scaleCorners]);
   const corners = state.gridCorners;
   return /* @__PURE__ */ u3(k, { children: [
     /* @__PURE__ */ u3("header", { class: "app-header", children: /* @__PURE__ */ u3("h1", { children: "\u{1F3A8} Pixel-Based Crafting - Image Pixelator" }) }),
