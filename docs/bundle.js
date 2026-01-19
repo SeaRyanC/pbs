@@ -1674,6 +1674,7 @@ function App() {
   const [dragStartPos, setDragStartPos] = h2(null);
   const [dragStartCorners, setDragStartCorners] = h2(null);
   const [dragStartRotation, setDragStartRotation] = h2(0);
+  const [isDraggingCenter, setIsDraggingCenter] = h2(false);
   const [imageOffset, setImageOffset] = h2({ x: 0, y: 0 });
   const [isInferring, setIsInferring] = h2(false);
   const [inferProgress, setInferProgress] = h2(null);
@@ -1884,13 +1885,40 @@ function App() {
       setDragStartRotation(state.rotation);
     }
   }, [state.gridCorners, state.rotation]);
+  const handleCenterMouseDown = q2((e3) => {
+    if (state.selectionMode !== "transform") return;
+    e3.preventDefault();
+    e3.stopPropagation();
+    setIsDragging(true);
+    setIsDraggingCenter(true);
+    if (containerRef.current) {
+      const rect = containerRef.current.getBoundingClientRect();
+      setDragStartPos({ x: e3.clientX - rect.left, y: e3.clientY - rect.top });
+      setDragStartCorners(state.gridCorners);
+    }
+  }, [state.gridCorners, state.selectionMode]);
   const handleMouseMove = q2((e3) => {
-    if (!isDragging || !dragCorner || !containerRef.current) return;
+    if (!isDragging || !containerRef.current) return;
+    if (!isDraggingCenter && !dragCorner) return;
     const rect = containerRef.current.getBoundingClientRect();
     const x2 = e3.clientX - rect.left;
     const y3 = e3.clientY - rect.top;
     setState((prev) => {
-      if (prev.selectionMode === "corners") {
+      if (isDraggingCenter) {
+        if (!dragStartPos || !dragStartCorners) return prev;
+        const deltaX = x2 - dragStartPos.x;
+        const deltaY = y3 - dragStartPos.y;
+        const newCorners = {
+          topLeft: { x: dragStartCorners.topLeft.x + deltaX, y: dragStartCorners.topLeft.y + deltaY },
+          topRight: { x: dragStartCorners.topRight.x + deltaX, y: dragStartCorners.topRight.y + deltaY },
+          bottomLeft: { x: dragStartCorners.bottomLeft.x + deltaX, y: dragStartCorners.bottomLeft.y + deltaY },
+          bottomRight: { x: dragStartCorners.bottomRight.x + deltaX, y: dragStartCorners.bottomRight.y + deltaY }
+        };
+        return {
+          ...prev,
+          gridCorners: newCorners
+        };
+      } else if (prev.selectionMode === "corners" && dragCorner) {
         return {
           ...prev,
           gridCorners: {
@@ -1898,7 +1926,7 @@ function App() {
             [dragCorner]: { x: x2, y: y3 }
           }
         };
-      } else {
+      } else if (dragCorner) {
         if (!dragStartPos || !dragStartCorners) return prev;
         const center = getCornersCenter(dragStartCorners);
         const startAngle = Math.atan2(dragStartPos.y - center.y, dragStartPos.x - center.x);
@@ -1923,14 +1951,16 @@ function App() {
           gridCorners: newCorners
         };
       }
+      return prev;
     });
-  }, [isDragging, dragCorner, dragStartPos, dragStartCorners, dragStartRotation]);
+  }, [isDragging, isDraggingCenter, dragCorner, dragStartPos, dragStartCorners, dragStartRotation]);
   const handleMouseUp = q2(() => {
     setIsDragging(false);
     setDragCorner(null);
     setDragStartPos(null);
     setDragStartCorners(null);
     setDragStartRotation(0);
+    setIsDraggingCenter(false);
   }, []);
   y2(() => {
     if (isDragging) {
@@ -2113,8 +2143,9 @@ function App() {
                 /* @__PURE__ */ u3(
                   "polygon",
                   {
-                    class: "grid-fill",
-                    points: `${corners.topLeft.x},${corners.topLeft.y} ${corners.topRight.x},${corners.topRight.y} ${corners.bottomRight.x},${corners.bottomRight.y} ${corners.bottomLeft.x},${corners.bottomLeft.y}`
+                    class: `grid-fill ${state.selectionMode === "transform" ? "draggable" : ""}`,
+                    points: `${corners.topLeft.x},${corners.topLeft.y} ${corners.topRight.x},${corners.topRight.y} ${corners.bottomRight.x},${corners.bottomRight.y} ${corners.bottomLeft.x},${corners.bottomLeft.y}`,
+                    onMouseDown: handleCenterMouseDown
                   }
                 ),
                 state.showPixelGrid && (state.colorMethod === "centerWeighted" || state.colorMethod === "centerSpot" ? (
