@@ -15,6 +15,78 @@ function transformCorner(point: Point, center: Point, angleDeg: number, scale: n
   };
 }
 
+// Interpolate a point within the quadrilateral defined by four corners
+// u and v are normalized coordinates (0-1) within the quad
+function interpolateQuadPoint(corners: GridCorners, u: number, v: number): Point {
+  const top = {
+    x: corners.topLeft.x + (corners.topRight.x - corners.topLeft.x) * u,
+    y: corners.topLeft.y + (corners.topRight.y - corners.topLeft.y) * u
+  };
+  const bottom = {
+    x: corners.bottomLeft.x + (corners.bottomRight.x - corners.bottomLeft.x) * u,
+    y: corners.bottomLeft.y + (corners.bottomRight.y - corners.bottomLeft.y) * u
+  };
+  return {
+    x: top.x + (bottom.x - top.x) * v,
+    y: top.y + (bottom.y - top.y) * v
+  };
+}
+
+// Generate pixel grid lines as SVG path data
+function generatePixelGridLines(corners: GridCorners, gridWidth: number, gridHeight: number): string {
+  const paths: string[] = [];
+  
+  // Vertical lines (from column boundaries)
+  for (let col = 1; col < gridWidth; col++) {
+    const u = col / gridWidth;
+    const top = interpolateQuadPoint(corners, u, 0);
+    const bottom = interpolateQuadPoint(corners, u, 1);
+    paths.push(`M ${top.x} ${top.y} L ${bottom.x} ${bottom.y}`);
+  }
+  
+  // Horizontal lines (from row boundaries)
+  for (let row = 1; row < gridHeight; row++) {
+    const v = row / gridHeight;
+    const left = interpolateQuadPoint(corners, 0, v);
+    const right = interpolateQuadPoint(corners, 1, v);
+    paths.push(`M ${left.x} ${left.y} L ${right.x} ${right.y}`);
+  }
+  
+  return paths.join(" ");
+}
+
+// Generate pixel grid circles at cell centers for center-based methods
+function generatePixelGridCircles(corners: GridCorners, gridWidth: number, gridHeight: number): Array<{ cx: number; cy: number; r: number }> {
+  const circles: Array<{ cx: number; cy: number; r: number }> = [];
+  
+  for (let row = 0; row < gridHeight; row++) {
+    for (let col = 0; col < gridWidth; col++) {
+      // Center of the cell
+      const u = (col + 0.5) / gridWidth;
+      const v = (row + 0.5) / gridHeight;
+      const center = interpolateQuadPoint(corners, u, v);
+      
+      // Get corners of this cell to estimate radius
+      const topLeft = interpolateQuadPoint(corners, col / gridWidth, row / gridHeight);
+      const topRight = interpolateQuadPoint(corners, (col + 1) / gridWidth, row / gridHeight);
+      const bottomLeft = interpolateQuadPoint(corners, col / gridWidth, (row + 1) / gridHeight);
+      
+      // Use the smaller dimension to determine radius
+      const width = Math.hypot(topRight.x - topLeft.x, topRight.y - topLeft.y);
+      const height = Math.hypot(bottomLeft.x - topLeft.x, bottomLeft.y - topLeft.y);
+      const minDim = Math.min(width, height);
+      
+      // Use 20% of cell size as radius to represent the center sampling area
+      const radiusFactor = 0.2;
+      const r = minDim * radiusFactor * 0.5;
+      
+      circles.push({ cx: center.x, cy: center.y, r: Math.max(r, 1) });
+    }
+  }
+  
+  return circles;
+}
+
 function App() {
   const [state, setState] = useState<AppState>(loadState);
   const [imageElement, setImageElement] = useState<HTMLImageElement | null>(null);
@@ -540,6 +612,27 @@ function App() {
                       points={`${corners.topLeft.x},${corners.topLeft.y} ${corners.topRight.x},${corners.topRight.y} ${corners.bottomRight.x},${corners.bottomRight.y} ${corners.bottomLeft.x},${corners.bottomLeft.y}`}
                     />
                     
+                    {state.showPixelGrid && (
+                      state.colorMethod === "centerWeighted" || state.colorMethod === "centerSpot" ? (
+                        // Render circles for center-based methods
+                        generatePixelGridCircles(corners, state.outputWidth, state.outputHeight).map((circle, i) => (
+                          <circle
+                            key={`pixel-circle-${i}`}
+                            class="pixel-grid-circle"
+                            cx={circle.cx}
+                            cy={circle.cy}
+                            r={circle.r}
+                          />
+                        ))
+                      ) : (
+                        // Render grid lines for other methods
+                        <path
+                          class="pixel-grid-lines"
+                          d={generatePixelGridLines(corners, state.outputWidth, state.outputHeight)}
+                        />
+                      )
+                    )}
+                    
                     {(["topLeft", "topRight", "bottomLeft", "bottomRight"] as CornerKey[]).map((key) => {
                       const corner = corners[key];
                       return (
@@ -844,6 +937,30 @@ function App() {
             </div>
             <p style={{ fontSize: "0.75rem", color: "#888", marginTop: "0.5rem" }}>
               Detects and removes solid background fields
+            </p>
+          </div>
+
+          <div class="settings-group">
+            <label>Pixel Grid Overlay</label>
+            <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
+              <input
+                type="checkbox"
+                id="showPixelGrid"
+                checked={state.showPixelGrid}
+                onChange={(e) => {
+                  const checked = (e.target as HTMLInputElement).checked;
+                  setState((prev) => ({ ...prev, showPixelGrid: checked }));
+                }}
+              />
+              <label htmlFor="showPixelGrid" style={{ fontSize: "0.75rem", color: "#888" }}>
+                Show pixel grid in source preview
+              </label>
+            </div>
+            <p style={{ fontSize: "0.75rem", color: "#888", marginTop: "0.5rem" }}>
+              {state.colorMethod === "centerWeighted" || state.colorMethod === "centerSpot"
+                ? "Shows sampling circles for center-based color methods"
+                : "Shows output pixel grid on source image"
+              }
             </p>
           </div>
         </aside>

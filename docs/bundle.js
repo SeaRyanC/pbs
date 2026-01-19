@@ -450,7 +450,8 @@ var DEFAULT_STATE = {
   selectionMode: "transform",
   maxColors: 32,
   enableColorLimit: true,
-  enableBackgroundDetection: true
+  enableBackgroundDetection: true,
+  showPixelGrid: false
 };
 var STORAGE_KEY = "pbs-app-state";
 function saveState(state) {
@@ -1398,6 +1399,56 @@ function transformCorner(point, center, angleDeg, scale) {
     y: center.y + (rotated.y - center.y) * scale
   };
 }
+function interpolateQuadPoint(corners, u4, v3) {
+  const top = {
+    x: corners.topLeft.x + (corners.topRight.x - corners.topLeft.x) * u4,
+    y: corners.topLeft.y + (corners.topRight.y - corners.topLeft.y) * u4
+  };
+  const bottom = {
+    x: corners.bottomLeft.x + (corners.bottomRight.x - corners.bottomLeft.x) * u4,
+    y: corners.bottomLeft.y + (corners.bottomRight.y - corners.bottomLeft.y) * u4
+  };
+  return {
+    x: top.x + (bottom.x - top.x) * v3,
+    y: top.y + (bottom.y - top.y) * v3
+  };
+}
+function generatePixelGridLines(corners, gridWidth, gridHeight) {
+  const paths = [];
+  for (let col = 1; col < gridWidth; col++) {
+    const u4 = col / gridWidth;
+    const top = interpolateQuadPoint(corners, u4, 0);
+    const bottom = interpolateQuadPoint(corners, u4, 1);
+    paths.push(`M ${top.x} ${top.y} L ${bottom.x} ${bottom.y}`);
+  }
+  for (let row = 1; row < gridHeight; row++) {
+    const v3 = row / gridHeight;
+    const left = interpolateQuadPoint(corners, 0, v3);
+    const right = interpolateQuadPoint(corners, 1, v3);
+    paths.push(`M ${left.x} ${left.y} L ${right.x} ${right.y}`);
+  }
+  return paths.join(" ");
+}
+function generatePixelGridCircles(corners, gridWidth, gridHeight) {
+  const circles = [];
+  for (let row = 0; row < gridHeight; row++) {
+    for (let col = 0; col < gridWidth; col++) {
+      const u4 = (col + 0.5) / gridWidth;
+      const v3 = (row + 0.5) / gridHeight;
+      const center = interpolateQuadPoint(corners, u4, v3);
+      const topLeft = interpolateQuadPoint(corners, col / gridWidth, row / gridHeight);
+      const topRight = interpolateQuadPoint(corners, (col + 1) / gridWidth, row / gridHeight);
+      const bottomLeft = interpolateQuadPoint(corners, col / gridWidth, (row + 1) / gridHeight);
+      const width = Math.hypot(topRight.x - topLeft.x, topRight.y - topLeft.y);
+      const height = Math.hypot(bottomLeft.x - topLeft.x, bottomLeft.y - topLeft.y);
+      const minDim = Math.min(width, height);
+      const radiusFactor = 0.2;
+      const r3 = minDim * radiusFactor * 0.5;
+      circles.push({ cx: center.x, cy: center.y, r: Math.max(r3, 1) });
+    }
+  }
+  return circles;
+}
 function App() {
   const [state, setState] = h2(loadState);
   const [imageElement, setImageElement] = h2(null);
@@ -1821,6 +1872,28 @@ function App() {
                     points: `${corners.topLeft.x},${corners.topLeft.y} ${corners.topRight.x},${corners.topRight.y} ${corners.bottomRight.x},${corners.bottomRight.y} ${corners.bottomLeft.x},${corners.bottomLeft.y}`
                   }
                 ),
+                state.showPixelGrid && (state.colorMethod === "centerWeighted" || state.colorMethod === "centerSpot" ? (
+                  // Render circles for center-based methods
+                  generatePixelGridCircles(corners, state.outputWidth, state.outputHeight).map((circle, i4) => /* @__PURE__ */ u3(
+                    "circle",
+                    {
+                      class: "pixel-grid-circle",
+                      cx: circle.cx,
+                      cy: circle.cy,
+                      r: circle.r
+                    },
+                    `pixel-circle-${i4}`
+                  ))
+                ) : (
+                  // Render grid lines for other methods
+                  /* @__PURE__ */ u3(
+                    "path",
+                    {
+                      class: "pixel-grid-lines",
+                      d: generatePixelGridLines(corners, state.outputWidth, state.outputHeight)
+                    }
+                  )
+                )),
                 ["topLeft", "topRight", "bottomLeft", "bottomRight"].map((key) => {
                   const corner = corners[key];
                   return /* @__PURE__ */ u3(
@@ -2136,6 +2209,25 @@ function App() {
             /* @__PURE__ */ u3("label", { htmlFor: "enableBackgroundDetection", style: { fontSize: "0.75rem", color: "#888" }, children: "Auto-remove uniform background" })
           ] }),
           /* @__PURE__ */ u3("p", { style: { fontSize: "0.75rem", color: "#888", marginTop: "0.5rem" }, children: "Detects and removes solid background fields" })
+        ] }),
+        /* @__PURE__ */ u3("div", { class: "settings-group", children: [
+          /* @__PURE__ */ u3("label", { children: "Pixel Grid Overlay" }),
+          /* @__PURE__ */ u3("div", { style: { display: "flex", alignItems: "center", gap: "0.5rem" }, children: [
+            /* @__PURE__ */ u3(
+              "input",
+              {
+                type: "checkbox",
+                id: "showPixelGrid",
+                checked: state.showPixelGrid,
+                onChange: (e3) => {
+                  const checked = e3.target.checked;
+                  setState((prev) => ({ ...prev, showPixelGrid: checked }));
+                }
+              }
+            ),
+            /* @__PURE__ */ u3("label", { htmlFor: "showPixelGrid", style: { fontSize: "0.75rem", color: "#888" }, children: "Show pixel grid in source preview" })
+          ] }),
+          /* @__PURE__ */ u3("p", { style: { fontSize: "0.75rem", color: "#888", marginTop: "0.5rem" }, children: state.colorMethod === "centerWeighted" || state.colorMethod === "centerSpot" ? "Shows sampling circles for center-based color methods" : "Shows output pixel grid on source image" })
         ] })
       ] })
     ] })
