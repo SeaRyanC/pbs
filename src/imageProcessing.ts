@@ -910,12 +910,12 @@ function calculateCellVariance(
   for (let y = startY; y < endY; y++) {
     for (let x = startX; x < endX; x++) {
       const idx = (Math.floor(y) * imageData.width + Math.floor(x)) * 4;
-      if (idx >= 0 && idx < imageData.data.length - 3) {
+      if (idx >= 0 && idx + 3 < imageData.data.length) {
         pixels.push({
-          r: imageData.data[idx]!,
-          g: imageData.data[idx + 1]!,
-          b: imageData.data[idx + 2]!,
-          a: imageData.data[idx + 3]!
+          r: imageData.data[idx] ?? 0,
+          g: imageData.data[idx + 1] ?? 0,
+          b: imageData.data[idx + 2] ?? 0,
+          a: imageData.data[idx + 3] ?? 255
         });
       }
     }
@@ -1032,9 +1032,11 @@ function detectPixelPitch(imageData: ImageData): { pitchX: number; pitchY: numbe
       const idx1 = (y * width + x - 1) * 4;
       const idx2 = (y * width + x) * 4;
       
-      const diff = Math.abs(imageData.data[idx1]! - imageData.data[idx2]!) +
-                   Math.abs(imageData.data[idx1 + 1]! - imageData.data[idx2 + 1]!) +
-                   Math.abs(imageData.data[idx1 + 2]! - imageData.data[idx2 + 2]!);
+      if (idx2 + 2 >= imageData.data.length) continue;
+      
+      const diff = Math.abs((imageData.data[idx1] ?? 0) - (imageData.data[idx2] ?? 0)) +
+                   Math.abs((imageData.data[idx1 + 1] ?? 0) - (imageData.data[idx2 + 1] ?? 0)) +
+                   Math.abs((imageData.data[idx1 + 2] ?? 0) - (imageData.data[idx2 + 2] ?? 0));
       
       hEdges[x] = (hEdges[x] ?? 0) + diff;
     }
@@ -1047,9 +1049,11 @@ function detectPixelPitch(imageData: ImageData): { pitchX: number; pitchY: numbe
       const idx1 = ((y - 1) * width + x) * 4;
       const idx2 = (y * width + x) * 4;
       
-      const diff = Math.abs(imageData.data[idx1]! - imageData.data[idx2]!) +
-                   Math.abs(imageData.data[idx1 + 1]! - imageData.data[idx2 + 1]!) +
-                   Math.abs(imageData.data[idx1 + 2]! - imageData.data[idx2 + 2]!);
+      if (idx2 + 2 >= imageData.data.length) continue;
+      
+      const diff = Math.abs((imageData.data[idx1] ?? 0) - (imageData.data[idx2] ?? 0)) +
+                   Math.abs((imageData.data[idx1 + 1] ?? 0) - (imageData.data[idx2 + 1] ?? 0)) +
+                   Math.abs((imageData.data[idx1 + 2] ?? 0) - (imageData.data[idx2 + 2] ?? 0));
       
       vEdges[y] = (vEdges[y] ?? 0) + diff;
     }
@@ -1117,7 +1121,7 @@ export async function inferDimensions(
   const regionWidth = maxX - minX;
   const regionHeight = maxY - minY;
   
-  // Use the full image for analysis
+  // Draw the full image to canvas, then extract the selected region for analysis
   tempCanvas.width = sourceImage.naturalWidth;
   tempCanvas.height = sourceImage.naturalHeight;
   const tempCtx = tempCanvas.getContext("2d");
@@ -1154,7 +1158,7 @@ export async function inferDimensions(
   
   onProgress?.({
     progress: 15,
-    phase: "Initial estimate: " + estimatedWidth + "×" + estimatedHeight,
+    phase: `Initial estimate: ${estimatedWidth}×${estimatedHeight}`,
     currentBest: { width: estimatedWidth, height: estimatedHeight }
   });
   
