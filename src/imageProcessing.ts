@@ -714,8 +714,8 @@ function detectAndRemoveBackground(
     }
   }
   
-  // Only proceed if background color appears in at least 50% of border pixels
-  if (!backgroundColor || maxCount < borderColors.length * 0.5) return;
+  // Only proceed if background color appears in at least 20% of border pixels
+  if (!backgroundColor || maxCount < borderColors.length * 0.2) return;
   
   const bgIctcp = rgbToIctcp(backgroundColor);
   // Use adaptive threshold based on color intensity and chroma (saturation)
@@ -738,63 +738,24 @@ function detectAndRemoveBackground(
   const colorThreshold = Math.min(adaptiveThreshold, 0.3);
   const colorThresholdSquared = colorThreshold * colorThreshold; // Pre-square for comparison with squared distance
   
-  // Track which pixels are part of a "connected" background region
-  // Use flood fill from edges to mark exterior background
-  const isBackground = new Array<boolean>(outputWidth * outputHeight).fill(false);
-  const visited = new Array<boolean>(outputWidth * outputHeight).fill(false);
-  
-  const isColorSimilar = (idx: number): boolean => {
+  // Remove ALL pixels that match the background color
+  // More aggressive than flood-fill but necessary when grid doesn't include enough background at edges
+  for (let i = 0; i < outputWidth * outputHeight; i++) {
+    const idx = i * 4;
     const pixel: RGBA = {
-      r: output.data[idx * 4]!,
-      g: output.data[idx * 4 + 1]!,
-      b: output.data[idx * 4 + 2]!,
-      a: output.data[idx * 4 + 3]!
+      r: output.data[idx]!,
+      g: output.data[idx + 1]!,
+      b: output.data[idx + 2]!,
+      a: output.data[idx + 3]!
     };
     
-    if (pixel.a === 0) return true; // Transparent is "background"
+    if (pixel.a === 0) continue; // Already transparent
     
     const pixelIctcp = rgbToIctcp(pixel);
-    return ictcpDistanceSquared(pixelIctcp, bgIctcp) < colorThresholdSquared;
-  };
-  
-  // BFS flood fill from all edge pixels
-  const queue: number[] = [];
-  
-  // Add all edge pixels to queue
-  for (let x = 0; x < outputWidth; x++) {
-    queue.push(x); // Top edge
-    queue.push((outputHeight - 1) * outputWidth + x); // Bottom edge
-  }
-  for (let y = 1; y < outputHeight - 1; y++) {
-    queue.push(y * outputWidth); // Left edge
-    queue.push(y * outputWidth + outputWidth - 1); // Right edge
-  }
-  
-  // Process queue
-  while (queue.length > 0) {
-    const idx = queue.pop()!;
+    const distance = ictcpDistanceSquared(pixelIctcp, bgIctcp);
     
-    if (visited[idx]) continue;
-    visited[idx] = true;
-    
-    if (!isColorSimilar(idx)) continue;
-    
-    isBackground[idx] = true;
-    
-    const x = idx % outputWidth;
-    const y = Math.floor(idx / outputWidth);
-    
-    // Check 4-connected neighbors
-    if (x > 0 && !visited[idx - 1]) queue.push(idx - 1);
-    if (x < outputWidth - 1 && !visited[idx + 1]) queue.push(idx + 1);
-    if (y > 0 && !visited[idx - outputWidth]) queue.push(idx - outputWidth);
-    if (y < outputHeight - 1 && !visited[idx + outputWidth]) queue.push(idx + outputWidth);
-  }
-  
-  // Clear background pixels (set alpha to 0)
-  for (let i = 0; i < isBackground.length; i++) {
-    if (isBackground[i]) {
-      output.data[i * 4 + 3] = 0; // Set alpha to 0
+    if (distance < colorThresholdSquared) {
+      output.data[idx + 3] = 0; // Set alpha to 0
     }
   }
 }

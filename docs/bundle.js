@@ -976,7 +976,7 @@ function detectAndRemoveBackground(output, imageData, corners, outputWidth, outp
       backgroundColor = color;
     }
   }
-  if (!backgroundColor || maxCount < borderColors.length * 0.5) return;
+  if (!backgroundColor || maxCount < borderColors.length * 0.2) return;
   const bgIctcp = rgbToIctcp(backgroundColor);
   const intensity = bgIctcp.i;
   const chroma = Math.sqrt(bgIctcp.ct * bgIctcp.ct + bgIctcp.cp * bgIctcp.cp);
@@ -986,44 +986,19 @@ function detectAndRemoveBackground(output, imageData, corners, outputWidth, outp
   const adaptiveThreshold = baseThreshold * intensityFactor * chromaFactor;
   const colorThreshold = Math.min(adaptiveThreshold, 0.3);
   const colorThresholdSquared = colorThreshold * colorThreshold;
-  const isBackground = new Array(outputWidth * outputHeight).fill(false);
-  const visited = new Array(outputWidth * outputHeight).fill(false);
-  const isColorSimilar = (idx) => {
+  for (let i4 = 0; i4 < outputWidth * outputHeight; i4++) {
+    const idx = i4 * 4;
     const pixel = {
-      r: output.data[idx * 4],
-      g: output.data[idx * 4 + 1],
-      b: output.data[idx * 4 + 2],
-      a: output.data[idx * 4 + 3]
+      r: output.data[idx],
+      g: output.data[idx + 1],
+      b: output.data[idx + 2],
+      a: output.data[idx + 3]
     };
-    if (pixel.a === 0) return true;
+    if (pixel.a === 0) continue;
     const pixelIctcp = rgbToIctcp(pixel);
-    return ictcpDistanceSquared(pixelIctcp, bgIctcp) < colorThresholdSquared;
-  };
-  const queue = [];
-  for (let x2 = 0; x2 < outputWidth; x2++) {
-    queue.push(x2);
-    queue.push((outputHeight - 1) * outputWidth + x2);
-  }
-  for (let y3 = 1; y3 < outputHeight - 1; y3++) {
-    queue.push(y3 * outputWidth);
-    queue.push(y3 * outputWidth + outputWidth - 1);
-  }
-  while (queue.length > 0) {
-    const idx = queue.pop();
-    if (visited[idx]) continue;
-    visited[idx] = true;
-    if (!isColorSimilar(idx)) continue;
-    isBackground[idx] = true;
-    const x2 = idx % outputWidth;
-    const y3 = Math.floor(idx / outputWidth);
-    if (x2 > 0 && !visited[idx - 1]) queue.push(idx - 1);
-    if (x2 < outputWidth - 1 && !visited[idx + 1]) queue.push(idx + 1);
-    if (y3 > 0 && !visited[idx - outputWidth]) queue.push(idx - outputWidth);
-    if (y3 < outputHeight - 1 && !visited[idx + outputWidth]) queue.push(idx + outputWidth);
-  }
-  for (let i4 = 0; i4 < isBackground.length; i4++) {
-    if (isBackground[i4]) {
-      output.data[i4 * 4 + 3] = 0;
+    const distance = ictcpDistanceSquared(pixelIctcp, bgIctcp);
+    if (distance < colorThresholdSquared) {
+      output.data[idx + 3] = 0;
     }
   }
 }
