@@ -2,7 +2,7 @@ import { render } from "preact";
 import { useState, useEffect, useRef, useCallback } from "preact/hooks";
 import type { AppState, Point, GridCorners, ColorMethod, SelectionMode } from "./types";
 import { DEFAULT_STATE, COLOR_METHODS, saveState, loadState } from "./types";
-import { generatePixelatedImage, getCornersCenter, rotatePoint, applyPerspectiveSkew } from "./imageProcessing";
+import { generatePixelatedImage, getCornersCenter, rotatePoint, applyPerspectiveSkew, inferDimensions, type InferDimensionsProgress } from "./imageProcessing";
 
 type CornerKey = keyof GridCorners;
 
@@ -25,6 +25,8 @@ function App() {
   const [dragStartCorners, setDragStartCorners] = useState<GridCorners | null>(null);
   const [dragStartRotation, setDragStartRotation] = useState<number>(0);
   const [imageOffset, setImageOffset] = useState<Point>({ x: 0, y: 0 });
+  const [isInferring, setIsInferring] = useState(false);
+  const [inferProgress, setInferProgress] = useState<InferDimensionsProgress | null>(null);
   
   const containerRef = useRef<HTMLDivElement>(null);
   const previewCanvasRef = useRef<HTMLCanvasElement>(null);
@@ -443,6 +445,43 @@ function App() {
     }));
   }, [imageElement]);
 
+  const handleInferDimensions = useCallback(async () => {
+    if (!imageElement) return;
+    
+    setIsInferring(true);
+    setInferProgress({ progress: 0, phase: "Starting analysis..." });
+    
+    try {
+      const scaledCorners = scaleCorners(state.gridCorners, imageElement);
+      const skewedCorners = applyPerspectiveSkew(
+        scaledCorners,
+        state.perspectiveSkewX,
+        state.perspectiveSkewY,
+        state.isometric
+      );
+      
+      const result = await inferDimensions(
+        imageElement,
+        skewedCorners,
+        state.outputWidth,
+        state.outputHeight,
+        (progress) => setInferProgress(progress)
+      );
+      
+      // Update the output dimensions with the inferred values
+      setState((prev) => ({
+        ...prev,
+        outputWidth: result.width,
+        outputHeight: result.height
+      }));
+    } catch (error) {
+      console.error("Error inferring dimensions:", error);
+    } finally {
+      setIsInferring(false);
+      setInferProgress(null);
+    }
+  }, [imageElement, state.gridCorners, state.outputWidth, state.outputHeight, state.perspectiveSkewX, state.perspectiveSkewY, state.isometric, scaleCorners]);
+
   const corners = state.gridCorners;
 
   return (
@@ -569,6 +608,7 @@ function App() {
                       setState((prev) => ({ ...prev, outputWidth: value }));
                     }
                   }}
+                  disabled={isInferring}
                 />
               </div>
               <div>
@@ -584,9 +624,43 @@ function App() {
                       setState((prev) => ({ ...prev, outputHeight: value }));
                     }
                   }}
+                  disabled={isInferring}
                 />
               </div>
             </div>
+            {state.sourceImage && (
+              <div style={{ marginTop: "0.75rem" }}>
+                <button
+                  class="btn btn-primary"
+                  onClick={handleInferDimensions}
+                  disabled={isInferring || !imageElement}
+                  style={{ width: "100%" }}
+                >
+                  {isInferring ? "🔄 Analyzing..." : "🔍 Infer Dimensions"}
+                </button>
+                {isInferring && inferProgress && (
+                  <div class="infer-progress" style={{ marginTop: "0.5rem" }}>
+                    <div class="progress-bar-container">
+                      <div 
+                        class="progress-bar-fill" 
+                        style={{ width: `${inferProgress.progress}%` }}
+                      />
+                    </div>
+                    <div class="progress-text">
+                      {inferProgress.phase}
+                    </div>
+                    {inferProgress.currentBest && (
+                      <div class="progress-best">
+                        Current best: {inferProgress.currentBest.width}×{inferProgress.currentBest.height}
+                      </div>
+                    )}
+                  </div>
+                )}
+                <p style={{ fontSize: "0.75rem", color: "#888", marginTop: "0.5rem" }}>
+                  Detects optimal pixel dimensions from pixel art images
+                </p>
+              </div>
+            )}
           </div>
 
           <div class="settings-group">

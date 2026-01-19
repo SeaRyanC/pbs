@@ -863,3 +863,430 @@ export function applyPerspectiveSkew(
     }
   };
 }
+
+/**
+ * Infer Dimensions Algorithm
+ * 
+ * This algorithm attempts to find the optimal pixel pitch (grid dimensions) for an image
+ * that appears to be upscaled pixel art. It works by:
+ * 1. Detecting edges/color transitions in the source image
+ * 2. Finding the periodicity of these transitions (the implied pixel size)
+ * 3. Optimizing for grid alignment that minimizes variance within cells
+ * 
+ * The key insight is that well-aligned pixel art will have uniform colors within each
+ * "implied pixel" cell, so we minimize the variance of colors within cells.
+ */
+
+export interface InferDimensionsResult {
+  width: number;
+  height: number;
+  offsetX: number;
+  offsetY: number;
+  confidence: number;
+}
+
+export interface InferDimensionsProgress {
+  progress: number;  // 0-100
+  phase: string;     // Description of current phase
+  currentBest?: { width: number; height: number };
+}
+
+/**
+ * Calculate the variance of colors within a cell.
+ * Lower variance means pixels are more uniform (better alignment).
+ */
+function calculateCellVariance(
+  imageData: ImageData,
+  startX: number,
+  startY: number,
+  cellWidth: number,
+  cellHeight: number
+): number {
+  const pixels: RGBA[] = [];
+  
+  const endX = Math.min(startX + cellWidth, imageData.width);
+  const endY = Math.min(startY + cellHeight, imageData.height);
+  
+  for (let y = startY; y < endY; y++) {
+    for (let x = startX; x < endX; x++) {
+      const idx = (Math.floor(y) * imageData.width + Math.floor(x)) * 4;
+      if (idx >= 0 && idx + 3 < imageData.data.length) {
+        pixels.push({
+          r: imageData.data[idx] ?? 0,
+          g: imageData.data[idx + 1] ?? 0,
+          b: imageData.data[idx + 2] ?? 0,
+          a: imageData.data[idx + 3] ?? 255
+        });
+      }
+    }
+  }
+  
+  if (pixels.length < 2) return 0;
+  
+  // Calculate mean
+  let sumR = 0, sumG = 0, sumB = 0;
+  for (const p of pixels) {
+    sumR += p.r;
+    sumG += p.g;
+    sumB += p.b;
+  }
+  const n = pixels.length;
+  const meanR = sumR / n;
+  const meanG = sumG / n;
+  const meanB = sumB / n;
+  
+  // Calculate variance
+  let variance = 0;
+  for (const p of pixels) {
+    variance += (p.r - meanR) ** 2 + (p.g - meanG) ** 2 + (p.b - meanB) ** 2;
+  }
+  
+  return variance / n;
+}
+
+/**
+ * Calculate the total variance score for a given grid configuration.
+ * Samples cells across the image and sums their variances.
+ */
+function calculateGridScore(
+  imageData: ImageData,
+  gridWidth: number,
+  gridHeight: number,
+  offsetX: number,
+  offsetY: number,
+  sampleRatio: number = 0.2
+): number {
+  const cellWidth = imageData.width / gridWidth;
+  const cellHeight = imageData.height / gridHeight;
+  
+  // Determine how many cells to sample
+  const totalCells = gridWidth * gridHeight;
+  const sampleCount = Math.max(10, Math.floor(totalCells * sampleRatio));
+  const step = Math.max(1, Math.floor(totalCells / sampleCount));
+  
+  let totalVariance = 0;
+  let cellCount = 0;
+  
+  for (let i = 0; i < totalCells; i += step) {
+    const cellX = i % gridWidth;
+    const cellY = Math.floor(i / gridWidth);
+    
+    const startX = offsetX + cellX * cellWidth;
+    const startY = offsetY + cellY * cellHeight;
+    
+    // Skip cells that are out of bounds
+    if (startX < 0 || startY < 0 || startX >= imageData.width || startY >= imageData.height) {
+      continue;
+    }
+    
+    totalVariance += calculateCellVariance(imageData, startX, startY, cellWidth, cellHeight);
+    cellCount++;
+  }
+  
+  return cellCount > 0 ? totalVariance / cellCount : Infinity;
+}
+
+/**
+ * Find the optimal offset for a given grid size by testing multiple offsets.
+ */
+function findOptimalOffset(
+  imageData: ImageData,
+  gridWidth: number,
+  gridHeight: number,
+  offsetSteps: number = 8
+): { offsetX: number; offsetY: number; score: number } {
+  const cellWidth = imageData.width / gridWidth;
+  const cellHeight = imageData.height / gridHeight;
+  
+  let bestOffset = { offsetX: 0, offsetY: 0, score: Infinity };
+  
+  // Test different offsets within one cell
+  for (let ox = 0; ox < offsetSteps; ox++) {
+    for (let oy = 0; oy < offsetSteps; oy++) {
+      const offsetX = (ox / offsetSteps) * cellWidth;
+      const offsetY = (oy / offsetSteps) * cellHeight;
+      
+      const score = calculateGridScore(imageData, gridWidth, gridHeight, offsetX, offsetY, 0.15);
+      
+      if (score < bestOffset.score) {
+        bestOffset = { offsetX, offsetY, score };
+      }
+    }
+  }
+  
+  return bestOffset;
+}
+
+/**
+ * Detect if the image has a dominant "pixel size" by analyzing edge frequencies.
+ * Returns an estimate of the pixel pitch.
+ */
+function detectPixelPitch(imageData: ImageData): { pitchX: number; pitchY: number } {
+  const width = imageData.width;
+  const height = imageData.height;
+  
+  // Calculate horizontal differences (detect vertical edges)
+  const hEdges: number[] = new Array(width).fill(0);
+  for (let y = 0; y < height; y++) {
+    for (let x = 1; x < width; x++) {
+      const idx1 = (y * width + x - 1) * 4;
+      const idx2 = (y * width + x) * 4;
+      
+      if (idx2 + 2 >= imageData.data.length) continue;
+      
+      const diff = Math.abs((imageData.data[idx1] ?? 0) - (imageData.data[idx2] ?? 0)) +
+                   Math.abs((imageData.data[idx1 + 1] ?? 0) - (imageData.data[idx2 + 1] ?? 0)) +
+                   Math.abs((imageData.data[idx1 + 2] ?? 0) - (imageData.data[idx2 + 2] ?? 0));
+      
+      hEdges[x] = (hEdges[x] ?? 0) + diff;
+    }
+  }
+  
+  // Calculate vertical differences (detect horizontal edges)
+  const vEdges: number[] = new Array(height).fill(0);
+  for (let y = 1; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const idx1 = ((y - 1) * width + x) * 4;
+      const idx2 = (y * width + x) * 4;
+      
+      if (idx2 + 2 >= imageData.data.length) continue;
+      
+      const diff = Math.abs((imageData.data[idx1] ?? 0) - (imageData.data[idx2] ?? 0)) +
+                   Math.abs((imageData.data[idx1 + 1] ?? 0) - (imageData.data[idx2 + 1] ?? 0)) +
+                   Math.abs((imageData.data[idx1 + 2] ?? 0) - (imageData.data[idx2 + 2] ?? 0));
+      
+      vEdges[y] = (vEdges[y] ?? 0) + diff;
+    }
+  }
+  
+  // Find periodicity in edge patterns using autocorrelation
+  const findPeriod = (edges: number[], maxPeriod: number): number => {
+    let bestPeriod = 1;
+    let bestScore = 0;
+    
+    for (let period = 4; period <= maxPeriod; period++) {
+      let correlation = 0;
+      let count = 0;
+      
+      for (let i = period; i < edges.length; i++) {
+        correlation += (edges[i] ?? 0) * (edges[i - period] ?? 0);
+        count++;
+      }
+      
+      if (count > 0) {
+        const score = correlation / count;
+        if (score > bestScore) {
+          bestScore = score;
+          bestPeriod = period;
+        }
+      }
+    }
+    
+    return bestPeriod;
+  };
+  
+  const pitchX = findPeriod(hEdges, Math.min(100, Math.floor(width / 4)));
+  const pitchY = findPeriod(vEdges, Math.min(100, Math.floor(height / 4)));
+  
+  return { pitchX, pitchY };
+}
+
+/**
+ * Main function to infer optimal dimensions for the image.
+ * This runs an optimization process to find the best grid size.
+ * 
+ * @param sourceImage - The source image element
+ * @param corners - The current grid corners (used to extract the region of interest)
+ * @param currentWidth - Current output width as starting point
+ * @param currentHeight - Current output height as starting point
+ * @param onProgress - Callback for progress updates
+ * @returns The inferred dimensions
+ */
+export async function inferDimensions(
+  sourceImage: HTMLImageElement,
+  corners: GridCorners,
+  currentWidth: number,
+  currentHeight: number,
+  onProgress?: (progress: InferDimensionsProgress) => void
+): Promise<InferDimensionsResult> {
+  // Create a canvas to get image data from the selected region
+  const tempCanvas = document.createElement("canvas");
+  
+  // Calculate the bounding box of the corners
+  const minX = Math.min(corners.topLeft.x, corners.bottomLeft.x);
+  const maxX = Math.max(corners.topRight.x, corners.bottomRight.x);
+  const minY = Math.min(corners.topLeft.y, corners.topRight.y);
+  const maxY = Math.max(corners.bottomLeft.y, corners.bottomRight.y);
+  
+  const regionWidth = maxX - minX;
+  const regionHeight = maxY - minY;
+  
+  // Draw the full image to canvas, then extract the selected region for analysis
+  tempCanvas.width = sourceImage.naturalWidth;
+  tempCanvas.height = sourceImage.naturalHeight;
+  const tempCtx = tempCanvas.getContext("2d");
+  
+  if (!tempCtx) {
+    return {
+      width: currentWidth,
+      height: currentHeight,
+      offsetX: 0,
+      offsetY: 0,
+      confidence: 0
+    };
+  }
+  
+  tempCtx.drawImage(sourceImage, 0, 0);
+  const imageData = tempCtx.getImageData(
+    Math.max(0, Math.floor(minX)),
+    Math.max(0, Math.floor(minY)),
+    Math.min(Math.floor(regionWidth), sourceImage.naturalWidth),
+    Math.min(Math.floor(regionHeight), sourceImage.naturalHeight)
+  );
+  
+  onProgress?.({ progress: 5, phase: "Analyzing image structure..." });
+  
+  // Allow UI to update
+  await new Promise(resolve => setTimeout(resolve, 0));
+  
+  // Phase 1: Detect initial pitch estimate from edge patterns
+  const { pitchX, pitchY } = detectPixelPitch(imageData);
+  
+  // Calculate initial grid size estimates
+  const estimatedWidth = Math.round(imageData.width / pitchX);
+  const estimatedHeight = Math.round(imageData.height / pitchY);
+  
+  onProgress?.({
+    progress: 15,
+    phase: `Initial estimate: ${estimatedWidth}×${estimatedHeight}`,
+    currentBest: { width: estimatedWidth, height: estimatedHeight }
+  });
+  
+  await new Promise(resolve => setTimeout(resolve, 0));
+  
+  // Phase 2: Coarse search around the estimate and current size
+  const searchRanges = {
+    minW: Math.max(4, Math.min(estimatedWidth, currentWidth) - 20),
+    maxW: Math.min(256, Math.max(estimatedWidth, currentWidth) + 20),
+    minH: Math.max(4, Math.min(estimatedHeight, currentHeight) - 20),
+    maxH: Math.min(256, Math.max(estimatedHeight, currentHeight) + 20)
+  };
+  
+  let bestResult = {
+    width: currentWidth,
+    height: currentHeight,
+    offsetX: 0,
+    offsetY: 0,
+    score: Infinity
+  };
+  
+  // Coarse search with step of 2
+  const coarseStep = 2;
+  const totalCoarseIterations = 
+    Math.ceil((searchRanges.maxW - searchRanges.minW) / coarseStep) *
+    Math.ceil((searchRanges.maxH - searchRanges.minH) / coarseStep);
+  
+  let coarseIteration = 0;
+  
+  for (let w = searchRanges.minW; w <= searchRanges.maxW; w += coarseStep) {
+    for (let h = searchRanges.minH; h <= searchRanges.maxH; h += coarseStep) {
+      coarseIteration++;
+      
+      // Quick score without offset optimization
+      const score = calculateGridScore(imageData, w, h, 0, 0, 0.1);
+      
+      if (score < bestResult.score) {
+        bestResult = { width: w, height: h, offsetX: 0, offsetY: 0, score };
+      }
+      
+      // Update progress periodically
+      if (coarseIteration % 50 === 0) {
+        const progress = 15 + (coarseIteration / totalCoarseIterations) * 35;
+        onProgress?.({
+          progress,
+          phase: `Coarse search: testing ${w}×${h}`,
+          currentBest: { width: bestResult.width, height: bestResult.height }
+        });
+        await new Promise(resolve => setTimeout(resolve, 0));
+      }
+    }
+  }
+  
+  onProgress?.({
+    progress: 50,
+    phase: `Coarse search complete. Best: ${bestResult.width}×${bestResult.height}`,
+    currentBest: { width: bestResult.width, height: bestResult.height }
+  });
+  
+  await new Promise(resolve => setTimeout(resolve, 0));
+  
+  // Phase 3: Fine search around the best coarse result
+  const fineSearchRange = 5;
+  const fineRanges = {
+    minW: Math.max(4, bestResult.width - fineSearchRange),
+    maxW: Math.min(256, bestResult.width + fineSearchRange),
+    minH: Math.max(4, bestResult.height - fineSearchRange),
+    maxH: Math.min(256, bestResult.height + fineSearchRange)
+  };
+  
+  const totalFineIterations = (fineRanges.maxW - fineRanges.minW + 1) * (fineRanges.maxH - fineRanges.minH + 1);
+  let fineIteration = 0;
+  
+  for (let w = fineRanges.minW; w <= fineRanges.maxW; w++) {
+    for (let h = fineRanges.minH; h <= fineRanges.maxH; h++) {
+      fineIteration++;
+      
+      // Find optimal offset for this grid size
+      const { offsetX, offsetY, score } = findOptimalOffset(imageData, w, h, 8);
+      
+      if (score < bestResult.score) {
+        bestResult = { width: w, height: h, offsetX, offsetY, score };
+      }
+      
+      // Update progress
+      const progress = 50 + (fineIteration / totalFineIterations) * 40;
+      if (fineIteration % 10 === 0) {
+        onProgress?.({
+          progress,
+          phase: `Fine search: testing ${w}×${h}`,
+          currentBest: { width: bestResult.width, height: bestResult.height }
+        });
+        await new Promise(resolve => setTimeout(resolve, 0));
+      }
+    }
+  }
+  
+  // Phase 4: Final offset optimization with higher resolution
+  onProgress?.({
+    progress: 92,
+    phase: `Optimizing alignment for ${bestResult.width}×${bestResult.height}`,
+    currentBest: { width: bestResult.width, height: bestResult.height }
+  });
+  
+  await new Promise(resolve => setTimeout(resolve, 0));
+  
+  const finalOffset = findOptimalOffset(imageData, bestResult.width, bestResult.height, 16);
+  bestResult.offsetX = finalOffset.offsetX;
+  bestResult.offsetY = finalOffset.offsetY;
+  bestResult.score = finalOffset.score;
+  
+  // Calculate confidence based on how much better the best result is compared to alternatives
+  // Lower score = better alignment, confidence is inverse of normalized score
+  const baselineScore = calculateGridScore(imageData, currentWidth, currentHeight, 0, 0, 0.2);
+  const improvement = baselineScore > 0 ? (baselineScore - bestResult.score) / baselineScore : 0;
+  const confidence = Math.max(0, Math.min(1, improvement + 0.5));
+  
+  onProgress?.({
+    progress: 100,
+    phase: `Complete: ${bestResult.width}×${bestResult.height}`,
+    currentBest: { width: bestResult.width, height: bestResult.height }
+  });
+  
+  return {
+    width: bestResult.width,
+    height: bestResult.height,
+    offsetX: bestResult.offsetX,
+    offsetY: bestResult.offsetY,
+    confidence
+  };
+}
