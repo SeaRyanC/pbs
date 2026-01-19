@@ -7,6 +7,12 @@ interface RGBA {
   a: number;
 }
 
+// Constants for perspective skew calculations
+const ISOMETRIC_ANGLE_DEGREES = 30;
+const ISOMETRIC_SCALE_FACTOR = 0.5;
+const SKEW_INTENSITY = 0.1;
+const NON_ISOMETRIC_SKEW_FACTOR = 5;
+
 export function perspectiveTransform(
   corners: GridCorners,
   u: number,
@@ -312,19 +318,6 @@ export function getCornersCenter(corners: GridCorners): Point {
   };
 }
 
-export function applyRotationToCorners(
-  corners: GridCorners,
-  rotation: number
-): GridCorners {
-  const center = getCornersCenter(corners);
-  return {
-    topLeft: rotatePoint(corners.topLeft, center, rotation),
-    topRight: rotatePoint(corners.topRight, center, rotation),
-    bottomLeft: rotatePoint(corners.bottomLeft, center, rotation),
-    bottomRight: rotatePoint(corners.bottomRight, center, rotation)
-  };
-}
-
 export function applyPerspectiveSkew(
   corners: GridCorners,
   skewX: number,
@@ -333,45 +326,44 @@ export function applyPerspectiveSkew(
 ): GridCorners {
   if (isometric) {
     const center = getCornersCenter(corners);
-    const isoAngle = 30;
-    const scale = 0.5;
+    const isoAngleRad = (ISOMETRIC_ANGLE_DEGREES * Math.PI) / 180;
     
     return {
       topLeft: {
-        x: corners.topLeft.x + (corners.topLeft.y - center.y) * Math.tan((isoAngle * Math.PI) / 180) * skewX * 0.1,
-        y: corners.topLeft.y * (1 - Math.abs(skewY) * 0.1 * scale)
+        x: corners.topLeft.x + (corners.topLeft.y - center.y) * Math.tan(isoAngleRad) * skewX * SKEW_INTENSITY,
+        y: corners.topLeft.y * (1 - Math.abs(skewY) * SKEW_INTENSITY * ISOMETRIC_SCALE_FACTOR)
       },
       topRight: {
-        x: corners.topRight.x + (corners.topRight.y - center.y) * Math.tan((isoAngle * Math.PI) / 180) * skewX * 0.1,
-        y: corners.topRight.y * (1 - Math.abs(skewY) * 0.1 * scale)
+        x: corners.topRight.x + (corners.topRight.y - center.y) * Math.tan(isoAngleRad) * skewX * SKEW_INTENSITY,
+        y: corners.topRight.y * (1 - Math.abs(skewY) * SKEW_INTENSITY * ISOMETRIC_SCALE_FACTOR)
       },
       bottomLeft: {
-        x: corners.bottomLeft.x + (corners.bottomLeft.y - center.y) * Math.tan((isoAngle * Math.PI) / 180) * skewX * 0.1,
-        y: corners.bottomLeft.y * (1 + Math.abs(skewY) * 0.1 * scale)
+        x: corners.bottomLeft.x + (corners.bottomLeft.y - center.y) * Math.tan(isoAngleRad) * skewX * SKEW_INTENSITY,
+        y: corners.bottomLeft.y * (1 + Math.abs(skewY) * SKEW_INTENSITY * ISOMETRIC_SCALE_FACTOR)
       },
       bottomRight: {
-        x: corners.bottomRight.x + (corners.bottomRight.y - center.y) * Math.tan((isoAngle * Math.PI) / 180) * skewX * 0.1,
-        y: corners.bottomRight.y * (1 + Math.abs(skewY) * 0.1 * scale)
+        x: corners.bottomRight.x + (corners.bottomRight.y - center.y) * Math.tan(isoAngleRad) * skewX * SKEW_INTENSITY,
+        y: corners.bottomRight.y * (1 + Math.abs(skewY) * SKEW_INTENSITY * ISOMETRIC_SCALE_FACTOR)
       }
     };
   }
   
   return {
     topLeft: {
-      x: corners.topLeft.x - skewX * 5,
-      y: corners.topLeft.y - skewY * 5
+      x: corners.topLeft.x - skewX * NON_ISOMETRIC_SKEW_FACTOR,
+      y: corners.topLeft.y - skewY * NON_ISOMETRIC_SKEW_FACTOR
     },
     topRight: {
-      x: corners.topRight.x + skewX * 5,
-      y: corners.topRight.y - skewY * 5
+      x: corners.topRight.x + skewX * NON_ISOMETRIC_SKEW_FACTOR,
+      y: corners.topRight.y - skewY * NON_ISOMETRIC_SKEW_FACTOR
     },
     bottomLeft: {
-      x: corners.bottomLeft.x - skewX * 5,
-      y: corners.bottomLeft.y + skewY * 5
+      x: corners.bottomLeft.x - skewX * NON_ISOMETRIC_SKEW_FACTOR,
+      y: corners.bottomLeft.y + skewY * NON_ISOMETRIC_SKEW_FACTOR
     },
     bottomRight: {
-      x: corners.bottomRight.x + skewX * 5,
-      y: corners.bottomRight.y + skewY * 5
+      x: corners.bottomRight.x + skewX * NON_ISOMETRIC_SKEW_FACTOR,
+      y: corners.bottomRight.y + skewY * NON_ISOMETRIC_SKEW_FACTOR
     }
   };
 }

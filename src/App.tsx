@@ -2,7 +2,7 @@ import { render } from "preact";
 import { useState, useEffect, useRef, useCallback } from "preact/hooks";
 import type { AppState, Point, GridCorners, ColorMethod } from "./types";
 import { DEFAULT_STATE, COLOR_METHODS, saveState, loadState } from "./types";
-import { generatePixelatedImage, getCornersCenter, rotatePoint } from "./imageProcessing";
+import { generatePixelatedImage, getCornersCenter, rotatePoint, applyPerspectiveSkew } from "./imageProcessing";
 
 type CornerKey = keyof GridCorners;
 
@@ -42,16 +42,22 @@ function App() {
     canvas.height = state.outputHeight;
 
     const scaledCorners = scaleCorners(state.gridCorners, imageElement);
+    const skewedCorners = applyPerspectiveSkew(
+      scaledCorners,
+      state.perspectiveSkewX,
+      state.perspectiveSkewY,
+      state.isometric
+    );
     const pixelData = generatePixelatedImage(
       imageElement,
-      scaledCorners,
+      skewedCorners,
       state.outputWidth,
       state.outputHeight,
       state.colorMethod
     );
 
     ctx.putImageData(pixelData, 0, 0);
-  }, [imageElement, state.gridCorners, state.outputWidth, state.outputHeight, state.colorMethod]);
+  }, [imageElement, state.gridCorners, state.outputWidth, state.outputHeight, state.colorMethod, state.perspectiveSkewX, state.perspectiveSkewY, state.isometric]);
 
   const scaleCorners = useCallback((corners: GridCorners, img: HTMLImageElement): GridCorners => {
     const container = containerRef.current;
@@ -301,11 +307,7 @@ function App() {
     }));
   }, [imageElement]);
 
-  const getRotatedCorners = (): GridCorners => {
-    return state.gridCorners;
-  };
-
-  const corners = getRotatedCorners();
+  const corners = state.gridCorners;
 
   return (
     <>

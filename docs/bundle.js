@@ -465,6 +465,10 @@ function loadState() {
 }
 
 // src/imageProcessing.ts
+var ISOMETRIC_ANGLE_DEGREES = 30;
+var ISOMETRIC_SCALE_FACTOR = 0.5;
+var SKEW_INTENSITY = 0.1;
+var NON_ISOMETRIC_SKEW_FACTOR = 5;
 function perspectiveTransform(corners, u4, v3) {
   const { topLeft, topRight, bottomLeft, bottomRight } = corners;
   const topX = topLeft.x + (topRight.x - topLeft.x) * u4;
@@ -698,6 +702,48 @@ function getCornersCenter(corners) {
     y: (corners.topLeft.y + corners.topRight.y + corners.bottomLeft.y + corners.bottomRight.y) / 4
   };
 }
+function applyPerspectiveSkew(corners, skewX, skewY, isometric) {
+  if (isometric) {
+    const center = getCornersCenter(corners);
+    const isoAngleRad = ISOMETRIC_ANGLE_DEGREES * Math.PI / 180;
+    return {
+      topLeft: {
+        x: corners.topLeft.x + (corners.topLeft.y - center.y) * Math.tan(isoAngleRad) * skewX * SKEW_INTENSITY,
+        y: corners.topLeft.y * (1 - Math.abs(skewY) * SKEW_INTENSITY * ISOMETRIC_SCALE_FACTOR)
+      },
+      topRight: {
+        x: corners.topRight.x + (corners.topRight.y - center.y) * Math.tan(isoAngleRad) * skewX * SKEW_INTENSITY,
+        y: corners.topRight.y * (1 - Math.abs(skewY) * SKEW_INTENSITY * ISOMETRIC_SCALE_FACTOR)
+      },
+      bottomLeft: {
+        x: corners.bottomLeft.x + (corners.bottomLeft.y - center.y) * Math.tan(isoAngleRad) * skewX * SKEW_INTENSITY,
+        y: corners.bottomLeft.y * (1 + Math.abs(skewY) * SKEW_INTENSITY * ISOMETRIC_SCALE_FACTOR)
+      },
+      bottomRight: {
+        x: corners.bottomRight.x + (corners.bottomRight.y - center.y) * Math.tan(isoAngleRad) * skewX * SKEW_INTENSITY,
+        y: corners.bottomRight.y * (1 + Math.abs(skewY) * SKEW_INTENSITY * ISOMETRIC_SCALE_FACTOR)
+      }
+    };
+  }
+  return {
+    topLeft: {
+      x: corners.topLeft.x - skewX * NON_ISOMETRIC_SKEW_FACTOR,
+      y: corners.topLeft.y - skewY * NON_ISOMETRIC_SKEW_FACTOR
+    },
+    topRight: {
+      x: corners.topRight.x + skewX * NON_ISOMETRIC_SKEW_FACTOR,
+      y: corners.topRight.y - skewY * NON_ISOMETRIC_SKEW_FACTOR
+    },
+    bottomLeft: {
+      x: corners.bottomLeft.x - skewX * NON_ISOMETRIC_SKEW_FACTOR,
+      y: corners.bottomLeft.y + skewY * NON_ISOMETRIC_SKEW_FACTOR
+    },
+    bottomRight: {
+      x: corners.bottomRight.x + skewX * NON_ISOMETRIC_SKEW_FACTOR,
+      y: corners.bottomRight.y + skewY * NON_ISOMETRIC_SKEW_FACTOR
+    }
+  };
+}
 
 // node_modules/preact/jsx-runtime/dist/jsxRuntime.module.js
 var f3 = 0;
@@ -741,15 +787,21 @@ function App() {
     canvas.width = state.outputWidth;
     canvas.height = state.outputHeight;
     const scaledCorners = scaleCorners(state.gridCorners, imageElement);
+    const skewedCorners = applyPerspectiveSkew(
+      scaledCorners,
+      state.perspectiveSkewX,
+      state.perspectiveSkewY,
+      state.isometric
+    );
     const pixelData = generatePixelatedImage(
       imageElement,
-      scaledCorners,
+      skewedCorners,
       state.outputWidth,
       state.outputHeight,
       state.colorMethod
     );
     ctx.putImageData(pixelData, 0, 0);
-  }, [imageElement, state.gridCorners, state.outputWidth, state.outputHeight, state.colorMethod]);
+  }, [imageElement, state.gridCorners, state.outputWidth, state.outputHeight, state.colorMethod, state.perspectiveSkewX, state.perspectiveSkewY, state.isometric]);
   const scaleCorners = q2((corners2, img) => {
     const container = containerRef.current;
     if (!container || !img) return corners2;
@@ -958,10 +1010,7 @@ function App() {
       rotation: 0
     }));
   }, [imageElement]);
-  const getRotatedCorners = () => {
-    return state.gridCorners;
-  };
-  const corners = getRotatedCorners();
+  const corners = state.gridCorners;
   return /* @__PURE__ */ u3(k, { children: [
     /* @__PURE__ */ u3("header", { class: "app-header", children: /* @__PURE__ */ u3("h1", { children: "\u{1F3A8} Pixel-Based Crafting - Image Pixelator" }) }),
     /* @__PURE__ */ u3("main", { class: "app-main", children: [
