@@ -50,12 +50,17 @@ function calculateAdaptiveThreshold(backgroundColor) {
   const intensity = bgIctcp.i;
   const chroma = Math.sqrt(bgIctcp.ct * bgIctcp.ct + bgIctcp.cp * bgIctcp.cp);
   
-  const baseThreshold = 0.02;
-  const intensityFactor = 1 + Math.min(intensity * 2, 2);
-  const chromaFactor = 1 + Math.min(chroma * 2, 4);
-  const adaptiveThreshold = baseThreshold * intensityFactor * chromaFactor;
+  // Algorithm constants (matches imageProcessing.ts)
+  const BASE_THRESHOLD = 0.02;
+  const MAX_INTENSITY_MULTIPLIER = 2; // Results in max 3x factor
+  const MAX_CHROMA_MULTIPLIER = 4;    // Results in max 5x factor
+  const MAX_THRESHOLD = 0.3;
   
-  const colorThreshold = Math.min(adaptiveThreshold, 0.3);
+  const intensityFactor = 1 + Math.min(intensity * 2, MAX_INTENSITY_MULTIPLIER);
+  const chromaFactor = 1 + Math.min(chroma * 2, MAX_CHROMA_MULTIPLIER);
+  const adaptiveThreshold = BASE_THRESHOLD * intensityFactor * chromaFactor;
+  
+  const colorThreshold = Math.min(adaptiveThreshold, MAX_THRESHOLD);
   const colorThresholdSquared = colorThreshold * colorThreshold;
   
   return {
@@ -71,12 +76,10 @@ function calculateAdaptiveThreshold(backgroundColor) {
 }
 
 // Test if a color would be considered similar to background
-function isColorSimilarToBackground(pixelColor, backgroundColor) {
-  const bgIctcp = rgbToIctcp(backgroundColor);
+function isColorSimilarToBackground(pixelColor, backgroundColor, bgCalc) {
   const pixelIctcp = rgbToIctcp(pixelColor);
   
-  const bgCalc = calculateAdaptiveThreshold(backgroundColor);
-  const distance = ictcpDistanceSquared(pixelIctcp, bgIctcp);
+  const distance = ictcpDistanceSquared(pixelIctcp, bgCalc.bgIctcp);
   const isSimilar = distance < bgCalc.colorThresholdSquared;
   
   return {
@@ -120,7 +123,7 @@ const testColors = [
 ];
 
 testColors.forEach(color => {
-  const result = isColorSimilarToBackground(color, brightMagenta);
+  const result = isColorSimilarToBackground(color, brightMagenta, magentaCalc);
   console.log(`${color.name} (${color.r},${color.g},${color.b}): ${result.isSimilar ? 'SIMILAR' : 'DIFFERENT'} (distance: ${result.distanceSqrt.toFixed(4)}, threshold: ${result.threshold.toFixed(4)})`);
 });
 
@@ -133,7 +136,7 @@ const differentColors = [
 ];
 
 differentColors.forEach(color => {
-  const result = isColorSimilarToBackground(color, brightMagenta);
+  const result = isColorSimilarToBackground(color, brightMagenta, magentaCalc);
   console.log(`${color.name} (${color.r},${color.g},${color.b}): ${result.isSimilar ? 'SIMILAR' : 'DIFFERENT'} (distance: ${result.distanceSqrt.toFixed(4)}, threshold: ${result.threshold.toFixed(4)})`);
 });
 

@@ -61,7 +61,7 @@ The background removal feature uses an adaptive threshold algorithm that works b
 
 - **How it works**: Detects the most common color at the output image edges and uses flood-fill to remove connected regions
 - **Important**: To use background removal, ensure your grid selection includes some background pixels that reach the output edges
-- **Adaptive threshold**: Automatically adjusts tolerance based on color intensity and saturation (0.02-0.3 range)
+- **Adaptive threshold**: Automatically adjusts tolerance based on color intensity and saturation (range: 0.02-0.3 in ICtCp perceptual color space)
 - **Testing**: Run `node test-background-removal.mjs` to verify the threshold calculation
 
 For best results with background removal:
