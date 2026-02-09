@@ -1,5 +1,3 @@
-import * as fs from 'fs';
-
 /**
  * Bead-based pixelation algorithm using hill-climbing random-lot-casting approach
  */
