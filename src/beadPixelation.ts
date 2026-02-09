@@ -404,6 +404,9 @@ class BeadPixelator {
     console.log(`Coverage: ${(claimedPixels / (this.imageData.width * this.imageData.height) * 100).toFixed(1)}%`);
     
     this.createDebugImage('01-beads-placed');
+    this.createExclusionZoneDebug('02-exclusion-zones');
+    this.createBeadSizeHeatmap('03-bead-size-heatmap');
+    this.createCoverageMap('04-coverage-map');
   }
   
   private createDebugImage(name: string): void {
@@ -442,6 +445,138 @@ class BeadPixelator {
     data[idx + 1] = color.g;
     data[idx + 2] = color.b;
     data[idx + 3] = color.a;
+  }
+  
+  private createExclusionZoneDebug(name: string): void {
+    const debugData = new Uint8ClampedArray(this.imageData.width * this.imageData.height * 4);
+    
+    // Color code the mask: green = free, red = in bead, yellow = exclusion zone
+    for (let y = 0; y < this.imageData.height; y++) {
+      for (let x = 0; x < this.imageData.width; x++) {
+        const idx = (y * this.imageData.width + x) * 4;
+        const maskValue = this.claimedMask[this.pixelIndex(x, y)];
+        
+        if (maskValue === 0) {
+          // Free - dark green
+          debugData[idx] = 0;
+          debugData[idx + 1] = 64;
+          debugData[idx + 2] = 0;
+          debugData[idx + 3] = 255;
+        } else if (maskValue === 1) {
+          // In bead - red
+          debugData[idx] = 255;
+          debugData[idx + 1] = 0;
+          debugData[idx + 2] = 0;
+          debugData[idx + 3] = 255;
+        } else {
+          // Exclusion zone - yellow
+          debugData[idx] = 255;
+          debugData[idx + 1] = 255;
+          debugData[idx + 2] = 0;
+          debugData[idx + 3] = 255;
+        }
+      }
+    }
+    
+    this.debugImages.set(name, {
+      width: this.imageData.width,
+      height: this.imageData.height,
+      data: debugData
+    });
+  }
+  
+  private createBeadSizeHeatmap(name: string): void {
+    const debugData = new Uint8ClampedArray(this.imageData.width * this.imageData.height * 4);
+    
+    // Fill with black background
+    debugData.fill(255);
+    
+    // Color each bead based on its size
+    for (const bead of this.beads) {
+      // Map size to color: smaller = blue, larger = red
+      const normalizedSize = (bead.size - this.minBeadSize) / (50 - this.minBeadSize);
+      const hue = (1 - Math.min(1, normalizedSize)) * 240; // 240 (blue) to 0 (red)
+      
+      const color = this.hslToRgb(hue / 360, 0.8, 0.5);
+      
+      for (let y = bead.top; y <= bead.bottom; y++) {
+        for (let x = bead.left; x <= bead.right; x++) {
+          this.setDebugPixel(debugData, x, y, color);
+        }
+      }
+      
+      // Draw border in white
+      for (let x = bead.left; x <= bead.right; x++) {
+        this.setDebugPixel(debugData, x, bead.top, { r: 255, g: 255, b: 255, a: 255 });
+        this.setDebugPixel(debugData, x, bead.bottom, { r: 255, g: 255, b: 255, a: 255 });
+      }
+      for (let y = bead.top; y <= bead.bottom; y++) {
+        this.setDebugPixel(debugData, bead.left, y, { r: 255, g: 255, b: 255, a: 255 });
+        this.setDebugPixel(debugData, bead.right, y, { r: 255, g: 255, b: 255, a: 255 });
+      }
+    }
+    
+    this.debugImages.set(name, {
+      width: this.imageData.width,
+      height: this.imageData.height,
+      data: debugData
+    });
+  }
+  
+  private createCoverageMap(name: string): void {
+    const debugData = new Uint8ClampedArray(this.imageData.width * this.imageData.height * 4);
+    
+    // Copy original image
+    debugData.set(this.imageData.data);
+    
+    // Overlay semi-transparent red on unclaimed pixels
+    for (let y = 0; y < this.imageData.height; y++) {
+      for (let x = 0; x < this.imageData.width; x++) {
+        const idx = (y * this.imageData.width + x) * 4;
+        if (this.claimedMask[this.pixelIndex(x, y)] === 0) {
+          // Unclaimed - overlay red
+          debugData[idx] = Math.min(255, debugData[idx]! + 100);
+          debugData[idx + 1] = Math.max(0, debugData[idx + 1]! - 50);
+          debugData[idx + 2] = Math.max(0, debugData[idx + 2]! - 50);
+        }
+      }
+    }
+    
+    this.debugImages.set(name, {
+      width: this.imageData.width,
+      height: this.imageData.height,
+      data: debugData
+    });
+  }
+  
+  private hslToRgb(h: number, s: number, l: number): RGB {
+    let r, g, b;
+    
+    if (s === 0) {
+      r = g = b = l;
+    } else {
+      const hue2rgb = (p: number, q: number, t: number) => {
+        if (t < 0) t += 1;
+        if (t > 1) t -= 1;
+        if (t < 1/6) return p + (q - p) * 6 * t;
+        if (t < 1/2) return q;
+        if (t < 2/3) return p + (q - p) * (2/3 - t) * 6;
+        return p;
+      };
+      
+      const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
+      const p = 2 * l - q;
+      r = hue2rgb(p, q, h + 1/3);
+      g = hue2rgb(p, q, h);
+      b = hue2rgb(p, q, h - 1/3);
+    }
+    
+    return {
+      r: Math.round(r * 255),
+      g: Math.round(g * 255),
+      b: Math.round(b * 255),
+      a: 255
+    };
   }
   
   public inferPixelPitch(): number {
