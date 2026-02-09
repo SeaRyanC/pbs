@@ -74,7 +74,7 @@ class BeadPixelator {
   
   constructor(
     imageData: ImageData,
-    minBeadSize: number = 15,
+    minBeadSize: number = 7,
     colorThreshold: number = 20,
     exclusionZoneSize: number = 2
   ) {
@@ -254,6 +254,33 @@ class BeadPixelator {
     return null;
   }
   
+  private tryGrowBeadUpLeft(bead: Bead): Bead | null {
+    // Grow up and to the left while keeping right and bottom edges stationary
+    const newSize = bead.size + 2;
+    const halfSize = Math.floor(bead.size / 2);
+    const newHalfSize = Math.floor(newSize / 2);
+    const offset = newHalfSize - halfSize;
+    
+    // New center is shifted up and left
+    const newCenterX = bead.centerX - offset;
+    const newCenterY = bead.centerY - offset;
+    
+    const color = this.canPlaceBead(newCenterX, newCenterY, newSize);
+    if (!color) return null;
+    
+    const newBead = new Bead(newCenterX, newCenterY, newSize, color);
+    
+    // Verify right and bottom edges stayed the same
+    if (newBead.right !== bead.right || newBead.bottom !== bead.bottom) {
+      return null;
+    }
+    
+    if (this.isProperlyBordered(newBead)) {
+      return newBead;
+    }
+    return null;
+  }
+  
   private tryMoveBead(bead: Bead, dx: number, dy: number): Bead | null {
     const newCenterX = bead.centerX + dx;
     const newCenterY = bead.centerY + dy;
@@ -275,7 +302,7 @@ class BeadPixelator {
     while (improved) {
       improved = false;
       
-      // Try growing
+      // Try growing (centered)
       let grownBead = this.tryGrowBead(bead);
       while (grownBead) {
         bead = grownBead;
@@ -297,6 +324,14 @@ class BeadPixelator {
         bead = movedBead;
         improved = true;
         movedBead = this.tryMoveBead(bead, 0, 1);
+      }
+      
+      // Try growing up and to the left (keeping right/bottom stationary)
+      let grownUpLeftBead = this.tryGrowBeadUpLeft(bead);
+      while (grownUpLeftBead) {
+        bead = grownUpLeftBead;
+        improved = true;
+        grownUpLeftBead = this.tryGrowBeadUpLeft(bead);
       }
     }
     
@@ -350,54 +385,72 @@ class BeadPixelator {
   }
   
   public process(): void {
-    console.log('Starting bead placement...');
-    let attempts = 0;
+    console.log('Starting bead placement with probing grid...');
     let placedBeads = 0;
-    let consecutiveFailures = 0;
-    const maxConsecutiveFailures = 10000; // Increased for better coverage
     
-    while (consecutiveFailures < maxConsecutiveFailures) {
-      attempts++;
-      
-      // Pick a random pixel
-      const x = Math.floor(Math.random() * this.imageData.width);
-      const y = Math.floor(Math.random() * this.imageData.height);
-      
-      // Skip if already claimed
-      if (this.isPixelClaimed(x, y)) {
-        consecutiveFailures++;
-        continue;
-      }
-      
-      // Try to place a bead at minimum size
-      const color = this.canPlaceBead(x, y, this.minBeadSize);
-      if (!color) {
-        consecutiveFailures++;
-        continue;
-      }
-      
-      const initialBead = new Bead(x, y, this.minBeadSize, color);
-      
-      // Check if properly bordered
-      if (!this.isProperlyBordered(initialBead)) {
-        consecutiveFailures++;
-        continue;
-      }
-      
-      // Optimize the bead
-      const optimizedBead = this.optimizeBead(initialBead);
-      
-      // Add the bead
-      this.addBead(optimizedBead);
-      placedBeads++;
-      consecutiveFailures = 0; // Reset on success
-      
-      if (placedBeads % 100 === 0) {
-        console.log(`Placed ${placedBeads} beads (${attempts} attempts)`);
+    // Walk through the image with a probing grid
+    const stride = this.minBeadSize;
+    
+    for (let gridY = 0; gridY < this.imageData.height - stride; gridY += stride) {
+      for (let gridX = 0; gridX < this.imageData.width - stride; gridX += stride) {
+        // Check the four corners of the probing grid
+        const corners: [number, number][] = [
+          [gridX, gridY],
+          [gridX + stride, gridY],
+          [gridX, gridY + stride],
+          [gridX + stride, gridY + stride]
+        ];
+        
+        // Check if we already have beads at these corners
+        let hasExistingBead = false;
+        for (const [cx, cy] of corners) {
+          if (this.isPixelInBead(cx, cy)) {
+            hasExistingBead = true;
+            break;
+          }
+        }
+        
+        if (hasExistingBead) continue;
+        
+        // Count different colors at the corners
+        const cornerColors: (RGB | null)[] = corners.map(([x, y]) => this.getPixel(x, y));
+        const differentColors = this.countDifferentColors(cornerColors.filter(c => c !== null) as RGB[]);
+        
+        // Need at least 3 different colors to be a useful spot
+        if (differentColors < 3) continue;
+        
+        // Initialize beads on each corner and optimize them away from center
+        const centerX = gridX + stride / 2;
+        const centerY = gridY + stride / 2;
+        
+        for (const [cx, cy] of corners) {
+          // Skip if this corner is already claimed
+          if (this.isPixelClaimed(cx, cy)) continue;
+          
+          // Try to place a bead at this corner
+          const color = this.canPlaceBead(cx, cy, this.minBeadSize);
+          if (!color) continue;
+          
+          const initialBead = new Bead(cx, cy, this.minBeadSize, color);
+          
+          // Check if properly bordered
+          if (!this.isProperlyBordered(initialBead)) continue;
+          
+          // Optimize the bead, moving it away from the grid center
+          const optimizedBead = this.optimizeBeadAwayFrom(initialBead, centerX, centerY);
+          
+          // Add the bead
+          this.addBead(optimizedBead);
+          placedBeads++;
+          
+          if (placedBeads % 100 === 0) {
+            console.log(`Placed ${placedBeads} beads`);
+          }
+        }
       }
     }
     
-    console.log(`Finished: placed ${placedBeads} beads in ${attempts} attempts`);
+    console.log(`Finished: placed ${placedBeads} beads`);
     const claimedPixels = this.claimedMask.filter(v => v !== 0).length;
     console.log(`Coverage: ${(claimedPixels / (this.imageData.width * this.imageData.height) * 100).toFixed(1)}%`);
     
@@ -405,6 +458,89 @@ class BeadPixelator {
     this.createExclusionZoneDebug('02-exclusion-zones');
     this.createBeadSizeHeatmap('03-bead-size-heatmap');
     this.createCoverageMap('04-coverage-map');
+  }
+  
+  private countDifferentColors(colors: RGB[]): number {
+    if (colors.length === 0) return 0;
+    
+    const uniqueColors: RGB[] = [];
+    for (const color of colors) {
+      let isDifferent = true;
+      for (const unique of uniqueColors) {
+        if (this.colorsMatch(color, unique)) {
+          isDifferent = false;
+          break;
+        }
+      }
+      if (isDifferent) {
+        uniqueColors.push(color);
+      }
+    }
+    return uniqueColors.length;
+  }
+  
+  private optimizeBeadAwayFrom(initialBead: Bead, centerX: number, centerY: number): Bead {
+    let bead = initialBead;
+    let improved = true;
+    
+    // Determine direction to move away from center
+    const moveRight = bead.centerX > centerX;
+    const moveDown = bead.centerY > centerY;
+    
+    while (improved) {
+      improved = false;
+      
+      // Try growing (centered)
+      let grownBead = this.tryGrowBead(bead);
+      while (grownBead) {
+        bead = grownBead;
+        improved = true;
+        grownBead = this.tryGrowBead(bead);
+      }
+      
+      // Try moving away from center
+      if (moveRight) {
+        let movedBead = this.tryMoveBead(bead, 1, 0);
+        while (movedBead) {
+          bead = movedBead;
+          improved = true;
+          movedBead = this.tryMoveBead(bead, 1, 0);
+        }
+      } else {
+        let movedBead = this.tryMoveBead(bead, -1, 0);
+        while (movedBead) {
+          bead = movedBead;
+          improved = true;
+          movedBead = this.tryMoveBead(bead, -1, 0);
+        }
+      }
+      
+      if (moveDown) {
+        let movedBead = this.tryMoveBead(bead, 0, 1);
+        while (movedBead) {
+          bead = movedBead;
+          improved = true;
+          movedBead = this.tryMoveBead(bead, 0, 1);
+        }
+      } else {
+        let movedBead = this.tryMoveBead(bead, 0, -1);
+        while (movedBead) {
+          bead = movedBead;
+          improved = true;
+          movedBead = this.tryMoveBead(bead, 0, -1);
+        }
+      }
+      
+      // Try growing up and to the left (keeping right/bottom stationary)
+      let grownUpLeftBead = this.tryGrowBeadUpLeft(bead);
+      while (grownUpLeftBead) {
+        bead = grownUpLeftBead;
+        improved = true;
+        grownUpLeftBead = this.tryGrowBeadUpLeft(bead);
+      }
+    }
+    
+    return bead;
   }
   
   private createDebugImage(name: string): void {
@@ -612,54 +748,170 @@ class BeadPixelator {
   public generateOutput(): ImageData {
     const pixelPitch = this.inferPixelPitch();
     
-    // Determine output dimensions based on input size and pixel pitch
-    const outputWidth = Math.ceil(this.imageData.width / pixelPitch);
-    const outputHeight = Math.ceil(this.imageData.height / pixelPitch);
+    // Determine bead types (1x1, 2x2, 3x3, etc.) and mark centerpoints
+    interface BeadCenterPoint {
+      x: number;
+      y: number;
+      gridSize: number; // 1 for 1x1, 2 for 2x2, etc.
+      bead: Bead;
+    }
+    
+    const beadCenters: BeadCenterPoint[] = [];
+    
+    for (const bead of this.beads) {
+      const gridSize = Math.round(bead.size / pixelPitch);
+      const actualGridSize = Math.max(1, gridSize);
+      
+      // For superbeads (2x2, 3x3, etc.), create multiple centerpoints
+      if (actualGridSize === 1) {
+        beadCenters.push({
+          x: bead.centerX,
+          y: bead.centerY,
+          gridSize: 1,
+          bead
+        });
+      } else {
+        // Create centerpoints for each cell in the superbead
+        const halfGridSize = Math.floor(actualGridSize / 2);
+        for (let gy = 0; gy < actualGridSize; gy++) {
+          for (let gx = 0; gx < actualGridSize; gx++) {
+            const offsetX = (gx - halfGridSize) * pixelPitch;
+            const offsetY = (gy - halfGridSize) * pixelPitch;
+            beadCenters.push({
+              x: bead.centerX + offsetX,
+              y: bead.centerY + offsetY,
+              gridSize: actualGridSize,
+              bead
+            });
+          }
+        }
+      }
+    }
+    
+    console.log(`Created ${beadCenters.length} bead centerpoints from ${this.beads.length} beads`);
+    
+    // Infer grid lines using least-squares regression
+    const verticalLines = this.inferGridLines(beadCenters, true, pixelPitch);
+    const horizontalLines = this.inferGridLines(beadCenters, false, pixelPitch);
+    
+    console.log(`Inferred ${verticalLines.length} vertical and ${horizontalLines.length} horizontal grid lines`);
+    
+    // Create output image based on the inferred grid
+    const outputWidth = verticalLines.length - 1;
+    const outputHeight = horizontalLines.length - 1;
     
     console.log(`Output dimensions: ${outputWidth}x${outputHeight}`);
     
     const outputData = new Uint8ClampedArray(outputWidth * outputHeight * 4);
     
     // Fill with transparent
-    for (let i = 0; i < outputData.length; i += 4) {
-      outputData[i] = 0;
-      outputData[i + 1] = 0;
-      outputData[i + 2] = 0;
-      outputData[i + 3] = 0;
-    }
+    outputData.fill(0);
     
-    // For each bead, calculate which output pixels it maps to
-    for (const bead of this.beads) {
-      const medianColor = this.getMedianColor(bead);
-      
-      // Calculate the output pixel coordinates for this bead
-      // A bead might be a "superbead" (2x2, 3x3, etc. in output space)
-      const beadOutputSize = Math.round(bead.size / pixelPitch);
-      const outputCenterX = Math.floor(bead.centerX / pixelPitch);
-      const outputCenterY = Math.floor(bead.centerY / pixelPitch);
-      
-      // Set pixels for this bead
-      for (let dy = -Math.floor(beadOutputSize / 2); dy <= Math.floor(beadOutputSize / 2); dy++) {
-        for (let dx = -Math.floor(beadOutputSize / 2); dx <= Math.floor(beadOutputSize / 2); dx++) {
-          const outX = outputCenterX + dx;
-          const outY = outputCenterY + dy;
-          
-          if (outX >= 0 && outX < outputWidth && outY >= 0 && outY < outputHeight) {
-            const idx = (outY * outputWidth + outX) * 4;
-            outputData[idx] = medianColor.r;
-            outputData[idx + 1] = medianColor.g;
-            outputData[idx + 2] = medianColor.b;
-            outputData[idx + 3] = medianColor.a;
+    // For each grid cell, find the bead that covers it
+    for (let row = 0; row < outputHeight; row++) {
+      for (let col = 0; col < outputWidth; col++) {
+        const cellCenterX = (verticalLines[col]! + verticalLines[col + 1]!) / 2;
+        const cellCenterY = (horizontalLines[row]! + horizontalLines[row + 1]!) / 2;
+        
+        // Find the bead covering this cell
+        let bestBead: Bead | null = null;
+        let minDist = Infinity;
+        
+        for (const center of beadCenters) {
+          if (center.bead.contains(Math.round(cellCenterX), Math.round(cellCenterY))) {
+            const dist = Math.hypot(center.x - cellCenterX, center.y - cellCenterY);
+            if (dist < minDist) {
+              minDist = dist;
+              bestBead = center.bead;
+            }
           }
+        }
+        
+        if (bestBead) {
+          const medianColor = this.getMedianColor(bestBead);
+          const idx = (row * outputWidth + col) * 4;
+          outputData[idx] = medianColor.r;
+          outputData[idx + 1] = medianColor.g;
+          outputData[idx + 2] = medianColor.b;
+          outputData[idx + 3] = medianColor.a;
         }
       }
     }
+    
+    // Create debug image showing the inferred grid
+    this.createInferredGridDebug('05-inferred-grid', verticalLines, horizontalLines);
     
     return {
       width: outputWidth,
       height: outputHeight,
       data: outputData
     };
+  }
+  
+  private inferGridLines(centers: Array<{x: number, y: number, gridSize: number, bead: Bead}>, vertical: boolean, pitch: number): number[] {
+    // Extract coordinates (x for vertical, y for horizontal)
+    const coords = centers.map(c => vertical ? c.x : c.y);
+    
+    if (coords.length === 0) return [];
+    
+    // Group coordinates by proximity (within pitch/2)
+    const groups: number[][] = [];
+    const sortedCoords = [...coords].sort((a, b) => a - b);
+    
+    let currentGroup: number[] = [sortedCoords[0]!];
+    for (let i = 1; i < sortedCoords.length; i++) {
+      const coord = sortedCoords[i]!;
+      const lastInGroup = currentGroup[currentGroup.length - 1]!;
+      
+      if (coord - lastInGroup < pitch * 0.75) {
+        currentGroup.push(coord);
+      } else {
+        groups.push(currentGroup);
+        currentGroup = [coord];
+      }
+    }
+    groups.push(currentGroup);
+    
+    // For each group, compute the average position (least-squares = mean for single dimension)
+    const lines = groups.map(group => {
+      const sum = group.reduce((a, b) => a + b, 0);
+      return sum / group.length;
+    });
+    
+    // Add boundary lines
+    const dimension = vertical ? this.imageData.width : this.imageData.height;
+    const result = [0, ...lines, dimension];
+    
+    return result.sort((a, b) => a - b);
+  }
+  
+  private createInferredGridDebug(name: string, verticalLines: number[], horizontalLines: number[]): void {
+    const debugData = new Uint8ClampedArray(this.imageData.width * this.imageData.height * 4);
+    
+    // Copy original image
+    debugData.set(this.imageData.data);
+    
+    // Draw vertical lines
+    for (const x of verticalLines) {
+      const ix = Math.round(x);
+      for (let y = 0; y < this.imageData.height; y++) {
+        this.setDebugPixel(debugData, ix, y, { r: 0, g: 255, b: 0, a: 255 });
+      }
+    }
+    
+    // Draw horizontal lines
+    for (const y of horizontalLines) {
+      const iy = Math.round(y);
+      for (let x = 0; x < this.imageData.width; x++) {
+        this.setDebugPixel(debugData, x, iy, { r: 0, g: 255, b: 0, a: 255 });
+      }
+    }
+    
+    this.debugImages.set(name, {
+      width: this.imageData.width,
+      height: this.imageData.height,
+      data: debugData
+    });
   }
   
   public getDebugImages(): Map<string, ImageData> {
