@@ -810,8 +810,15 @@ class BeadPixelator {
     // For each grid cell, find the bead that covers it
     for (let row = 0; row < outputHeight; row++) {
       for (let col = 0; col < outputWidth; col++) {
-        const cellCenterX = (verticalLines[col]! + verticalLines[col + 1]!) / 2;
-        const cellCenterY = (horizontalLines[row]! + horizontalLines[row + 1]!) / 2;
+        // Each cell is bounded by adjacent grid lines
+        // outputWidth = verticalLines.length - 1, so col+1 is always valid
+        const leftLine = verticalLines[col]!;
+        const rightLine = verticalLines[col + 1]!;
+        const topLine = horizontalLines[row]!;
+        const bottomLine = horizontalLines[row + 1]!;
+        
+        const cellCenterX = (leftLine + rightLine) / 2;
+        const cellCenterY = (topLine + bottomLine) / 2;
         
         // Find the bead covering this cell
         let bestBead: Bead | null = null;
@@ -852,9 +859,11 @@ class BeadPixelator {
     // Extract coordinates (x for vertical, y for horizontal)
     const coords = centers.map(c => vertical ? c.x : c.y);
     
-    if (coords.length === 0) return [];
+    if (coords.length === 0) return [0, vertical ? this.imageData.width : this.imageData.height];
     
-    // Group coordinates by proximity (within pitch/2)
+    // Group coordinates by proximity
+    // Threshold of 0.75 * pitch allows for slight variations while grouping nearby beads
+    const GROUPING_THRESHOLD = 0.75;
     const groups: number[][] = [];
     const sortedCoords = [...coords].sort((a, b) => a - b);
     
@@ -863,7 +872,7 @@ class BeadPixelator {
       const coord = sortedCoords[i]!;
       const lastInGroup = currentGroup[currentGroup.length - 1]!;
       
-      if (coord - lastInGroup < pitch * 0.75) {
+      if (coord - lastInGroup < pitch * GROUPING_THRESHOLD) {
         currentGroup.push(coord);
       } else {
         groups.push(currentGroup);
