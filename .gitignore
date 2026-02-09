@@ -4,6 +4,9 @@ node_modules/
 # Build outputs (except docs which is for GitHub Pages)
 dist/
 
+# Debug output images
+debug-*.png
+
 # IDE
 .vscode/
 .idea/
