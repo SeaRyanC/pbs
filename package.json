@@ -5,6 +5,8 @@
   "type": "module",
   "scripts": {
     "build": "esbuild src/App.tsx --bundle --outfile=docs/bundle.js --format=esm --target=es2020 --jsx=automatic --jsx-import-source=preact",
+    "build:cli": "tsc && node dist/processPng.js",
+    "process": "tsc && node dist/processPng.js ring.png ring-pixel.png",
     "typecheck": "tsc --noEmit",
     "watch": "esbuild src/App.tsx --bundle --outfile=docs/bundle.js --format=esm --target=es2020 --jsx=automatic --jsx-import-source=preact --watch"
   },
@@ -17,10 +19,13 @@
   "author": "",
   "license": "ISC",
   "devDependencies": {
+    "@types/node": "^25.2.2",
+    "@types/pngjs": "^6.0.5",
     "esbuild": "^0.25.0",
     "typescript": "^5.9.0-beta"
   },
   "dependencies": {
+    "pngjs": "^7.0.0",
     "preact": "^10.25.4"
   }
 }
